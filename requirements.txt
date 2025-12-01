@@ -3,7 +3,7 @@
 jax>=0.4.20
 jaxlib>=0.4.20
 flax>=0.8.0
-
+opencv-python>=4.7.0.72
 # Testing
 pytest>=7.0.0
 

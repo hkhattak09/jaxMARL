@@ -64,7 +64,7 @@ def load_shapes_from_pickle(filepath: str) -> ShapeLibrary:
     Expected pickle structure:
     {
         'l_cell': list of cell sizes,
-        'grid_coords': list of (2, n_grid) arrays,
+        'grid_coords': list of (n_grid, 2) arrays (also handles (2, n_grid)),
         'binary_image': list of 2D arrays (optional),
         'shape_bound_points': list of [x_min, x_max, y_min, y_max] (optional)
     }
