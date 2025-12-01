@@ -607,13 +607,92 @@ def run_eval_episode(
     return metrics, states
 
 
+def create_jit_train_step(
+    maddpg: MADDPG,
+    config: AssemblyTrainConfig,
+):
+    """Create a JIT-compiled training step function.
+    
+    This creates a properly JIT-compiled training function that uses lax.scan
+    instead of Python loops for maximum performance.
+    
+    Args:
+        maddpg: MADDPG instance
+        config: Training configuration
+        
+    Returns:
+        jit_train_step: JIT-compiled training function
+    """
+    updates_per_step = config.updates_per_step
+    warmup_steps = config.warmup_steps
+    
+    # Get the JIT-compiled update from MADDPG
+    # This compiles the entire agent update loop into a single XLA computation
+    jit_maddpg_update = maddpg.create_jit_update()
+    
+    def single_update(carry, _):
+        """Single update step for lax.scan."""
+        maddpg_state, key = carry
+        key, update_key = random.split(key)
+        new_state, update_info = jit_maddpg_update(update_key, maddpg_state)
+        actor_loss = update_info.get("actor_loss", jnp.array(0.0))
+        critic_loss = update_info.get("critic_loss", jnp.array(0.0))
+        return (new_state, key), (actor_loss, critic_loss)
+    
+    @jax.jit
+    def jit_train_step(
+        maddpg_state: MADDPGState,
+        key: jax.Array,
+    ) -> Tuple[MADDPGState, Dict[str, Any]]:
+        """JIT-compiled training step with lax.scan."""
+        buffer_size = maddpg_state.buffer_state.size
+        
+        def do_updates(state_key):
+            state, k = state_key
+            (final_state, _), (actor_losses, critic_losses) = jax.lax.scan(
+                single_update,
+                (state, k),
+                jnp.arange(updates_per_step),
+            )
+            mean_actor_loss = jnp.mean(actor_losses)
+            mean_critic_loss = jnp.mean(critic_losses)
+            return final_state, mean_actor_loss, mean_critic_loss
+        
+        def skip_updates(state_key):
+            state, _ = state_key
+            return state, jnp.array(0.0), jnp.array(0.0)
+        
+        # Use lax.cond to conditionally skip updates
+        can_update = buffer_size >= warmup_steps
+        final_state, actor_loss, critic_loss = jax.lax.cond(
+            can_update,
+            do_updates,
+            skip_updates,
+            (maddpg_state, key),
+        )
+        
+        info = {
+            "actor_loss": actor_loss,
+            "critic_loss": critic_loss,
+            "buffer_size": buffer_size,
+            "updated": can_update,
+        }
+        
+        return final_state, info
+    
+    return jit_train_step
+
+
 def train_step(
     maddpg: MADDPG,
     maddpg_state: MADDPGState,
     key: jax.Array,
     config: AssemblyTrainConfig,
 ) -> Tuple[MADDPGState, Dict[str, float]]:
-    """Perform gradient updates.
+    """Perform gradient updates (LEGACY - use create_jit_train_step for speed).
+    
+    This is kept for backwards compatibility but is slow due to Python loops.
+    Use create_jit_train_step() instead for production training.
     
     Args:
         maddpg: MADDPG instance
@@ -705,6 +784,11 @@ def train(
     jit_rollout_fn = create_jit_rollout_fn(maddpg, params, config, vec_step)
     print("JIT rollout function created (will compile on first use)")
     
+    # Create JIT-compiled training step
+    print("Creating JIT-compiled training step...")
+    jit_train_step = create_jit_train_step(maddpg, config)
+    print("JIT training step created (will compile on first use)")
+    
     # Load checkpoint if resuming
     start_episode = 0
     if checkpoint_path is not None:
@@ -729,17 +813,27 @@ def train(
             jit_rollout_fn=jit_rollout_fn, explore=True
         )
         
-        # Perform gradient updates
+        # Perform gradient updates (JIT-compiled)
         train_start = time.time()
         key, train_key = random.split(training_state.key)
-        maddpg_state, train_info = train_step(
-            maddpg, training_state.maddpg_state, train_key, config
+        maddpg_state, train_info = jit_train_step(
+            training_state.maddpg_state, train_key
         )
         training_state = training_state.replace(
             maddpg_state=maddpg_state,
             key=key,
         )
         train_time = time.time() - train_start
+        
+        # Convert JAX arrays to Python scalars for logging
+        buffer_size_val = int(train_info['buffer_size'])
+        actor_loss_val = float(train_info['actor_loss']) if train_info['updated'] else 0.0
+        critic_loss_val = float(train_info['critic_loss']) if train_info['updated'] else 0.0
+        
+        # Calculate elapsed time
+        elapsed_time = time.time() - training_start
+        elapsed_mins = int(elapsed_time // 60)
+        elapsed_secs = elapsed_time % 60
         
         # Logging
         if episode % config.log_interval == 0 and verbose:
@@ -749,10 +843,10 @@ def train(
                 f"Coverage: {episode_metrics['coverage_rate']:.3f} | "
                 f"Collisions: {episode_metrics['collision_rate']:.3f} | "
                 f"Noise: {episode_metrics['noise_scale']:.3f} | "
-                f"Buffer: {train_info['buffer_size']:6d} | "
-                f"Envs: {config.n_parallel_envs} | "
+                f"Buffer: {buffer_size_val:6d} | "
                 f"Step: {episode_metrics['step_time']:.2f}s | "
-                f"Train: {train_time:.2f}s"
+                f"Train: {train_time:.2f}s | "
+                f"Elapsed: {elapsed_mins}m {elapsed_secs:.1f}s"
             )
         
         # JSON logging (save metrics to file for later analysis)
@@ -764,15 +858,15 @@ def train(
                 "coverage_rate": episode_metrics["coverage_rate"],
                 "collision_rate": episode_metrics["collision_rate"],
                 "noise_scale": episode_metrics["noise_scale"],
-                "buffer_size": train_info["buffer_size"],
+                "buffer_size": buffer_size_val,
                 "step_time": episode_metrics["step_time"],
                 "train_time": train_time,
                 "n_parallel_envs": config.n_parallel_envs,
                 "total_transitions": episode_metrics.get("total_transitions", 0),
             }
             if train_info.get("updated", False):
-                log_entry["actor_loss"] = float(train_info["actor_loss"])
-                log_entry["critic_loss"] = float(train_info["critic_loss"])
+                log_entry["actor_loss"] = actor_loss_val
+                log_entry["critic_loss"] = critic_loss_val
             training_history.append(log_entry)
             
             # Periodically save to file
