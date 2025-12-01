@@ -692,6 +692,8 @@ class MADDPG:
         # Update each agent
         new_agent_states = list(state.agent_states)
         info = {'can_update': True}
+        total_actor_loss = 0.0
+        total_critic_loss = 0.0
         
         for agent_i in range(self.n_agents):
             key, update_key = random.split(key)
@@ -768,6 +770,10 @@ class MADDPG:
             
             new_agent_states[agent_i] = agent_state
             
+            # Accumulate losses
+            total_actor_loss += float(actor_info['actor_loss'])
+            total_critic_loss += float(critic_info['critic_loss'])
+            
             # Record info
             info[f'agent_{agent_i}/critic_loss'] = critic_info['critic_loss']
             info[f'agent_{agent_i}/actor_loss'] = actor_info['actor_loss']
@@ -795,8 +801,171 @@ class MADDPG:
         
         info['step'] = new_step
         info['noise_scale'] = new_noise_scale
+        info['actor_loss'] = total_actor_loss / self.n_agents
+        info['critic_loss'] = total_critic_loss / self.n_agents
         
         return new_state, info
+    
+    def create_jit_update(self):
+        """Create a JIT-compiled update function.
+        
+        This method creates a closure over self that can be JIT-compiled.
+        Call this once after initialization and use the returned function
+        for training to get maximum performance.
+        
+        Returns:
+            jit_update: JIT-compiled update function with signature:
+                (key, state) -> (new_state, info)
+        """
+        # Capture all necessary attributes in closure
+        n_agents = self.n_agents
+        actors = self.actors
+        critics = self.critics
+        buffer = self.buffer
+        actor_optimizer = self.actor_optimizer
+        critic_optimizer = self.critic_optimizer
+        config = self.config
+        obs_dims = self.obs_dims
+        action_dims = self.action_dims
+        
+        @jax.jit
+        def jit_update(
+            key: jax.Array,
+            state: MADDPGState,
+        ) -> Tuple[MADDPGState, Dict[str, Any]]:
+            """JIT-compiled update for all agents."""
+            
+            # Check if we can update
+            can_update = buffer.can_sample(state.buffer_state, config.batch_size)
+            
+            def do_update(carry):
+                key, state = carry
+                
+                # Sample from buffer
+                key, sample_key = random.split(key)
+                batch = buffer.sample(state.buffer_state, sample_key, config.batch_size)
+                
+                batch_size = batch.obs.shape[0]
+                obs_flat = batch.obs.reshape(batch_size, -1)
+                next_obs_flat = batch.next_obs.reshape(batch_size, -1)
+                actions_flat = batch.actions.reshape(batch_size, -1)
+                
+                global_states = obs_flat
+                next_global_states = next_obs_flat
+                
+                # Compute target actions for all agents
+                target_actions_list = []
+                for i in range(n_agents):
+                    agent_next_obs = batch.next_obs[:, i, :obs_dims[i]]
+                    target_action = select_target_action(
+                        actors[i], state.agent_states[i].target_actor_params, agent_next_obs
+                    )
+                    if target_action.shape[-1] < buffer.action_dim:
+                        target_action = jnp.pad(
+                            target_action, 
+                            ((0, 0), (0, buffer.action_dim - target_action.shape[-1]))
+                        )
+                    target_actions_list.append(target_action)
+                
+                target_actions = jnp.stack(target_actions_list, axis=1).reshape(batch_size, -1)
+                
+                # Update all agents
+                new_agent_states = list(state.agent_states)
+                total_actor_loss = jnp.array(0.0)
+                total_critic_loss = jnp.array(0.0)
+                
+                for agent_i in range(n_agents):
+                    key, update_key = random.split(key)
+                    
+                    agent_state = new_agent_states[agent_i]
+                    agent_obs = batch.obs[:, agent_i, :obs_dims[agent_i]]
+                    agent_reward = batch.rewards[:, agent_i:agent_i+1]
+                    agent_dones = batch.dones[:, agent_i:agent_i+1]
+                    
+                    # Update critic
+                    agent_state, critic_info = update_critic(
+                        agent_state=agent_state,
+                        critic=critics[agent_i],
+                        actor=actors[agent_i],
+                        optimizer=critic_optimizer,
+                        global_obs=global_states,
+                        all_actions=actions_flat,
+                        rewards=agent_reward,
+                        next_global_obs=next_global_states,
+                        next_all_actions=target_actions,
+                        dones=agent_dones,
+                        gamma=config.gamma,
+                    )
+                    
+                    # Update actor
+                    action_dim = buffer.action_dim
+                    action_start = agent_i * action_dim
+                    action_end = action_start + action_dim
+                    
+                    all_actions_except_agent = jnp.concatenate([
+                        actions_flat[:, :action_start],
+                        actions_flat[:, action_end:]
+                    ], axis=-1)
+                    
+                    agent_prior = None
+                    if batch.action_priors is not None and config.prior_weight > 0:
+                        agent_prior = batch.action_priors[:, agent_i, :]
+                    
+                    agent_state, actor_info = update_actor(
+                        agent_state=agent_state,
+                        actor=actors[agent_i],
+                        critic=critics[agent_i],
+                        optimizer=actor_optimizer,
+                        global_obs=global_states,
+                        agent_obs=agent_obs,
+                        all_actions_except_agent=all_actions_except_agent,
+                        agent_action_idx=agent_i,
+                        action_dim=action_dims[agent_i],
+                        action_prior=agent_prior,
+                        prior_weight=config.prior_weight,
+                    )
+                    
+                    # Update targets
+                    agent_state = update_targets(agent_state, config.tau)
+                    new_agent_states[agent_i] = agent_state
+                    
+                    total_actor_loss = total_actor_loss + actor_info['actor_loss']
+                    total_critic_loss = total_critic_loss + critic_info['critic_loss']
+                
+                new_step = state.step + 1
+                new_noise = config.noise_scale_initial - jnp.minimum(
+                    1.0, new_step / config.noise_decay_steps
+                ) * (config.noise_scale_initial - config.noise_scale_final)
+                
+                new_state = state.replace(
+                    agent_states=new_agent_states,
+                    step=new_step,
+                    noise_scale=new_noise,
+                )
+                
+                return new_state, total_actor_loss / n_agents, total_critic_loss / n_agents
+            
+            def skip_update(carry):
+                _, state = carry
+                return state, jnp.array(0.0), jnp.array(0.0)
+            
+            new_state, actor_loss, critic_loss = jax.lax.cond(
+                can_update,
+                do_update,
+                skip_update,
+                (key, state),
+            )
+            
+            info = {
+                'can_update': can_update,
+                'actor_loss': actor_loss,
+                'critic_loss': critic_loss,
+                'buffer_size': state.buffer_state.size,
+            }
+            
+            return new_state, info
+        
+        return jit_update
     
     def reset_noise(self, state: MADDPGState) -> MADDPGState:
         """Reset exploration noise for all agents.

@@ -93,59 +93,59 @@ config = None
 
 # # -------------------- FAST DEBUG CONFIG --------------------
 # # Use this for quick testing and debugging
-config = AssemblyTrainConfig(
-    # Environment
-    n_agents=5,
-    n_parallel_envs=2,
-    arena_size=5.0,
-    agent_radius=0.1,
-    max_velocity=0.8,
-    max_acceleration=1.0,
-    # Observation
-    k_neighbors=4,
-    d_sen=3.0,
-    include_self_state=True,
-    # Physics
-    dt=0.1,
-    # Episode
-    max_steps=50,
-    # Domain randomization
-    randomize_shape=True,
-    randomize_rotation=True,
-    randomize_scale=True,
-    randomize_offset=True,
-    # Reward
-    reward_mode="individual",
-    # Algorithm
-    hidden_dim=128,
-    lr_actor=1e-4,
-    lr_critic=1e-3,
-    gamma=0.95,
-    tau=0.01,
-    buffer_size=1000,
-    batch_size=64,
-    warmup_steps=100,
-    noise_scale_initial=0.9,
-    noise_scale_final=0.1,
-    noise_decay_steps=1000,
-    update_every=50,
-    updates_per_step=5,
-    prior_weight=0.3,
-    # Training
-    seed=226,
-    n_episodes=100,
-    log_interval=1,
-    save_interval=5,
-    # Evaluation
-    eval_interval=10,
-    eval_save_video=True,
-    eval_video_fps=10,
-    # Paths
-    shape_file=None,
-    checkpoint_dir=None,
-    log_dir=None,
-    eval_dir=None,
-)
+# config = AssemblyTrainConfig(
+#     # Environment
+#     n_agents=5,
+#     n_parallel_envs=2,
+#     arena_size=5.0,
+#     agent_radius=0.1,
+#     max_velocity=0.8,
+#     max_acceleration=1.0,
+#     # Observation
+#     k_neighbors=4,
+#     d_sen=3.0,
+#     include_self_state=True,
+#     # Physics
+#     dt=0.1,
+#     # Episode
+#     max_steps=50,
+#     # Domain randomization
+#     randomize_shape=True,
+#     randomize_rotation=True,
+#     randomize_scale=True,
+#     randomize_offset=True,
+#     # Reward
+#     reward_mode="individual",
+#     # Algorithm
+#     hidden_dim=128,
+#     lr_actor=1e-4,
+#     lr_critic=1e-3,
+#     gamma=0.95,
+#     tau=0.01,
+#     buffer_size=1000,
+#     batch_size=64,
+#     warmup_steps=100,
+#     noise_scale_initial=0.9,
+#     noise_scale_final=0.1,
+#     noise_decay_steps=1000,
+#     update_every=50,
+#     updates_per_step=5,
+#     prior_weight=0.3,
+#     # Training
+#     seed=226,
+#     n_episodes=100,
+#     log_interval=1,
+#     save_interval=5,
+#     # Evaluation
+#     eval_interval=10,
+#     eval_save_video=True,
+#     eval_video_fps=10,
+#     # Paths
+#     shape_file=None,
+#     checkpoint_dir=None,
+#     log_dir=None,
+#     eval_dir=None,
+# )
 
 # # -------------------- SMALL SCALE EXPERIMENT --------------------
 # # Use this for quick experiments with fewer agents
@@ -201,55 +201,55 @@ config = AssemblyTrainConfig(
 
 # # -------------------- FULL SCALE TRAINING --------------------
 # # Use this for full training runs
-# config = AssemblyTrainConfig(
-#     # Environment
-#     n_agents=30,
-#     n_parallel_envs=8,
-#     arena_size=5.0,
-#     agent_radius=0.1,
-#     max_velocity=0.8,
-#     max_acceleration=1.0,
-#     # Observation
-#     k_neighbors=6,
-#     d_sen=3.0,
-#     include_self_state=True,
-#     # Physics
-#     dt=0.1,
-#     # Episode
-#     max_steps=200,
-#     # Domain randomization
-#     randomize_shape=True,
-#     randomize_rotation=True,
-#     randomize_scale=True,
-#     randomize_offset=True,
-#     # Reward
-#     reward_mode="individual",
-#     # Algorithm
-#     hidden_dim=256,
-#     lr_actor=1e-4,
-#     lr_critic=1e-3,
-#     gamma=0.95,
-#     tau=0.01,
-#     buffer_size=50000,
-#     batch_size=2048,
-#     warmup_steps=5000,
-#     noise_scale_initial=0.5,
-#     noise_scale_final=0.1,
-#     noise_decay_steps=100000,
-#     update_every=100,
-#     updates_per_step=30,
-#     prior_weight=0.5,
-#     # Training
-#     seed=226,
-#     n_episodes=3000,
-#     log_interval=10,
-#     save_interval=100,
-#     eval_interval=50,
-#     # Paths
-#     shape_file=None,
-#     checkpoint_dir=None,
-#     log_dir=None,
-# )
+config = AssemblyTrainConfig(
+    # Environment
+    n_agents=30,
+    n_parallel_envs=8,
+    arena_size=5.0,
+    agent_radius=0.1,
+    max_velocity=0.8,
+    max_acceleration=1.0,
+    # Observation
+    k_neighbors=6,
+    d_sen=3.0,
+    include_self_state=True,
+    # Physics
+    dt=0.1,
+    # Episode
+    max_steps=200,
+    # Domain randomization
+    randomize_shape=True,
+    randomize_rotation=True,
+    randomize_scale=True,
+    randomize_offset=True,
+    # Reward
+    reward_mode="individual",
+    # Algorithm
+    hidden_dim=256,
+    lr_actor=1e-4,
+    lr_critic=1e-3,
+    gamma=0.95,
+    tau=0.01,
+    buffer_size=50000,
+    batch_size=2048,
+    warmup_steps=5000,
+    noise_scale_initial=0.5,
+    noise_scale_final=0.1,
+    noise_decay_steps=100000,
+    update_every=100,
+    updates_per_step=30,
+    prior_weight=0.5,
+    # Training
+    seed=226,
+    n_episodes=3000,
+    log_interval=1,
+    save_interval=100,
+    eval_interval=50,
+    # Paths
+    shape_file=None,
+    checkpoint_dir=None,
+    log_dir=None,
+)
 
 
 # ============================================================================
