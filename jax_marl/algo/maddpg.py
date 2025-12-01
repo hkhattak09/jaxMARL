@@ -500,6 +500,123 @@ class MADDPG:
         
         return state.replace(buffer_state=new_buffer_state)
     
+    def select_actions_batched(
+        self,
+        key: jax.Array,
+        state: MADDPGState,
+        obs_batch: jax.Array,
+        explore: bool = True,
+    ) -> Tuple[jax.Array, MADDPGState]:
+        """Select actions for all agents across multiple parallel environments.
+        
+        This is a vectorized version that avoids Python loops for efficiency.
+        
+        Args:
+            key: JAX random key
+            state: Current MADDPG state
+            obs_batch: Observations, shape (n_envs, n_agents, obs_dim)
+            explore: Whether to add exploration noise
+            
+        Returns:
+            actions: Actions, shape (n_envs, n_agents, action_dim)
+            new_state: Updated state
+        """
+        n_envs = obs_batch.shape[0]
+        n_agents = self.n_agents
+        
+        # Generate keys for all envs and agents
+        keys = random.split(key, n_envs * n_agents).reshape(n_envs, n_agents, 2)
+        
+        # Process each agent (still loop over agents since they have different networks,
+        # but vectorize over environments)
+        all_actions = []
+        new_agent_states = []
+        
+        # Extract noise_scale once (outside of traced functions to avoid float() issues)
+        noise_scale_value = state.noise_scale
+        
+        for i, (actor, agent_state) in enumerate(zip(self.actors, state.agent_states)):
+            # obs for this agent across all envs: (n_envs, obs_dim)
+            agent_obs = obs_batch[:, i, :]
+            agent_keys = keys[:, i, :]  # (n_envs, 2) but we just need n_envs keys
+            
+            if explore:
+                # Vectorized action selection with noise across all envs
+                def select_single(key_obs):
+                    k, obs = key_obs
+                    action, _, _ = select_action_with_noise(
+                        key=k,
+                        actor=actor,
+                        actor_params=agent_state.actor_params,
+                        obs=obs,
+                        noise_scale=noise_scale_value,  # Pass JAX array directly
+                        noise_type='gaussian',
+                        noise_state=None,  # Gaussian doesn't need state
+                        epsilon=0.0,
+                        discrete_action=self.config.discrete_action,
+                    )
+                    return action
+                
+                # vmap over environments
+                agent_keys_flat = random.split(random.fold_in(key, i), n_envs)
+                actions = jax.vmap(select_single)((agent_keys_flat, agent_obs))
+            else:
+                # No noise - just apply actor to batch
+                actions = actor.apply(agent_state.actor_params, agent_obs, training=False)
+            
+            all_actions.append(actions)
+            new_agent_states.append(agent_state)
+        
+        # Stack: list of (n_envs, action_dim) -> (n_envs, n_agents, action_dim)
+        actions_batch = jnp.stack(all_actions, axis=1)
+        
+        new_state = state.replace(agent_states=new_agent_states)
+        return actions_batch, new_state
+    
+    def store_transitions_batched(
+        self,
+        state: MADDPGState,
+        obs_batch: jax.Array,
+        actions_batch: jax.Array,
+        rewards_batch: jax.Array,
+        next_obs_batch: jax.Array,
+        dones_batch: jax.Array,
+        action_priors_batch: Optional[jax.Array] = None,
+    ) -> MADDPGState:
+        """Store transitions from multiple parallel environments at once.
+        
+        This is much more efficient than storing one at a time.
+        
+        Args:
+            state: Current MADDPG state
+            obs_batch: Observations, shape (n_envs, n_agents, obs_dim)
+            actions_batch: Actions, shape (n_envs, n_agents, action_dim)
+            rewards_batch: Rewards, shape (n_envs, n_agents)
+            next_obs_batch: Next observations, shape (n_envs, n_agents, obs_dim)
+            dones_batch: Done flags, shape (n_envs, n_agents)
+            action_priors_batch: Optional prior actions, shape (n_envs, n_agents, action_dim)
+            
+        Returns:
+            Updated MADDPGState
+        """
+        # Create batched transition - shapes already match buffer format
+        transitions = Transition(
+            obs=obs_batch,
+            actions=actions_batch,
+            rewards=rewards_batch,
+            next_obs=next_obs_batch,
+            dones=dones_batch,
+            global_state=None,
+            next_global_state=None,
+            log_probs=None,
+            action_priors=action_priors_batch,
+        )
+        
+        # Add batch to buffer
+        new_buffer_state = self.buffer.add_batch(state.buffer_state, transitions)
+        
+        return state.replace(buffer_state=new_buffer_state)
+
     def update(
         self,
         key: jax.Array,

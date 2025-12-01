@@ -89,6 +89,8 @@ class AssemblyTrainConfig(NamedTuple):
 # Example Configs (commented out - uncomment to use, or just edit above)
 # ============================================================================
 
+config = None
+
 # # -------------------- FAST DEBUG CONFIG --------------------
 # # Use this for quick testing and debugging
 config = AssemblyTrainConfig(
@@ -256,7 +258,10 @@ config = AssemblyTrainConfig(
 
 def get_config() -> AssemblyTrainConfig:
     """Get the current config. Returns the defaults from the class."""
-    return AssemblyTrainConfig()
+    if config is not None:
+        return config
+    else:
+        return AssemblyTrainConfig()
 
 
 def get_shape_file_path(config: AssemblyTrainConfig) -> str:
@@ -304,7 +309,10 @@ def get_log_dir(config: AssemblyTrainConfig, run_name: Optional[str] = None) -> 
 
 
 def get_eval_dir(config: AssemblyTrainConfig, run_name: Optional[str] = None) -> str:
-    """Get eval video directory path."""
+    """Get eval video directory path.
+    
+    Note: Directory is NOT created here - it will be created lazily when first file is saved.
+    """
     if config.eval_dir is not None:
         base_dir = Path(config.eval_dir)
     else:
@@ -316,7 +324,7 @@ def get_eval_dir(config: AssemblyTrainConfig, run_name: Optional[str] = None) ->
         run_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
     eval_dir = base_dir / "assembly" / run_name
-    eval_dir.mkdir(parents=True, exist_ok=True)
+    # Don't create directory here - create lazily when saving files
     return str(eval_dir)
 
 

@@ -301,7 +301,6 @@ def create_animation(
             anim.save(save_path, writer='ffmpeg', fps=fps)
         else:
             anim.save(save_path, fps=fps)
-        print(f"Animation saved to {save_path}")
     
     if show:
         plt.show()

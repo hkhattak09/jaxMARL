@@ -309,7 +309,7 @@ def select_action_with_noise(
     actor: nn.Module,
     actor_params: Any,
     obs: jax.Array,
-    noise_scale: float,
+    noise_scale: Union[float, jax.Array],
     noise_type: str = 'gaussian',
     noise_state: Optional[OUNoiseState] = None,
     ou_params: Optional[OUNoiseParams] = None,
@@ -332,7 +332,7 @@ def select_action_with_noise(
         actor: Actor network
         actor_params: Actor parameters
         obs: Observation(s)
-        noise_scale: Scale of exploration noise
+        noise_scale: Scale of exploration noise (float or JAX array)
         noise_type: 'gaussian' or 'ou'
         noise_state: OU noise state (if noise_type='ou')
         ou_params: OU noise parameters (if noise_type='ou')
@@ -347,6 +347,9 @@ def select_action_with_noise(
         new_noise_state: Updated noise state (None if Gaussian)
     """
     key_eps, key_random, key_noise = random.split(key, 3)
+    
+    # Ensure noise_scale is a JAX array for consistent handling
+    noise_scale = jnp.asarray(noise_scale)
     
     # Handle single observation
     single_obs = obs.ndim == 1
@@ -780,7 +783,10 @@ def get_noise_scale(
     Returns:
         Current noise scale
     """
-    from noise import linear_schedule, exponential_schedule, cosine_schedule
+    try:
+        from .noise import linear_schedule, exponential_schedule, cosine_schedule
+    except ImportError:
+        from noise import linear_schedule, exponential_schedule, cosine_schedule
     
     if schedule == 'linear':
         return linear_schedule(initial_scale, final_scale, step, total_steps)

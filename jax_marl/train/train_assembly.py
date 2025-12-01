@@ -168,8 +168,11 @@ def create_training_state(
     def vec_step(keys: jnp.ndarray, states, actions: jnp.ndarray):
         return jax.vmap(lambda k, s, a: env.step(k, s, a, params))(keys, states, actions)
     
-    # Get observation/action dimensions
-    obs_dim = compute_observation_dim(params.obs_params)
+    # Get actual observation dimension from environment reset
+    # (computed obs_dim may differ from actual environment output)
+    test_keys = random.split(env_key, n_envs)
+    test_obs, _ = vec_reset(test_keys)
+    obs_dim = test_obs.shape[-1]  # Actual obs dim from environment
     action_dim = 2  # 2D acceleration
     
     print(f"Environment: {config.n_agents} agents, obs_dim={obs_dim}, action_dim={action_dim}")
@@ -196,6 +199,181 @@ def create_training_state(
     return training_state, env, maddpg, params, vec_reset, vec_step
 
 
+# ============================================================================
+# JIT-Compiled Rollout State
+# ============================================================================
+
+@struct.dataclass
+class RolloutCarry:
+    """State carried through the JIT-compiled rollout loop.
+    
+    All fields must be JAX arrays or pytrees of JAX arrays for JIT compatibility.
+    """
+    key: jax.Array
+    obs_batch: jax.Array  # (n_envs, n_agents, obs_dim)
+    env_states: AssemblyState  # Batched environment states
+    maddpg_state: MADDPGState  # Algorithm state with buffer
+    episode_rewards: jax.Array  # (n_envs,)
+    total_coverage: jax.Array  # scalar
+    total_collision: jax.Array  # scalar
+    done_flag: jax.Array  # bool scalar - whether all envs are done
+
+
+@struct.dataclass  
+class RolloutMetrics:
+    """Metrics from a single rollout step (used with lax.scan)."""
+    reward: jax.Array
+    coverage: jax.Array
+    collision: jax.Array
+
+
+def create_jit_rollout_fn(
+    maddpg: MADDPG,
+    params: AssemblyParams,
+    config: AssemblyTrainConfig,
+    vec_step: callable,
+):
+    """Create a JIT-compiled rollout function.
+    
+    This function creates a rollout that runs entirely on GPU without Python loop overhead.
+    Uses jax.lax.scan for the inner loop.
+    
+    Args:
+        maddpg: MADDPG instance (for network structure)
+        params: Environment parameters  
+        config: Training configuration
+        vec_step: Vectorized step function
+        
+    Returns:
+        jit_rollout_fn: JIT-compiled function that runs a full episode
+    """
+    n_envs = config.n_parallel_envs
+    n_agents = config.n_agents
+    max_steps = config.max_steps
+    use_prior = config.prior_weight > 0
+    
+    # Pre-define the prior computation function outside the loop
+    @jax.jit
+    def compute_priors_batch(positions, velocities, grid_centers, grid_mask, l_cell):
+        """Compute prior actions for all environments."""
+        def single_env_prior(pos, vel, gc, gm, lc):
+            return compute_prior_policy(
+                pos, vel, gc, gm, lc,
+                params.reward_params.collision_threshold,
+                params.d_sen,
+            )
+        return jax.vmap(single_env_prior)(positions, velocities, grid_centers, grid_mask, l_cell)
+    
+    def rollout_step(carry: RolloutCarry, step_idx: int) -> Tuple[RolloutCarry, RolloutMetrics]:
+        """Single step of the rollout - will be scanned over."""
+        # Split keys
+        key, action_key, step_key = random.split(carry.key, 3)
+        step_keys = random.split(step_key, n_envs)
+        
+        # Select actions (batched over envs)
+        actions_batch, new_maddpg_state = maddpg.select_actions_batched(
+            action_key, carry.maddpg_state, carry.obs_batch, explore=True
+        )
+        
+        # Step environments
+        next_obs_batch, new_env_states, rewards_batch, dones_batch, info_batch = vec_step(
+            step_keys, carry.env_states, actions_batch
+        )
+        
+        # Compute priors if needed
+        if use_prior:
+            prior_actions_batch = compute_priors_batch(
+                new_env_states.positions,
+                new_env_states.velocities,
+                new_env_states.grid_centers,
+                new_env_states.grid_mask,
+                new_env_states.l_cell,
+            )
+        else:
+            prior_actions_batch = None
+        
+        # Store transitions
+        new_maddpg_state = maddpg.store_transitions_batched(
+            new_maddpg_state,
+            carry.obs_batch,
+            actions_batch,
+            rewards_batch,
+            next_obs_batch,
+            dones_batch,
+            action_priors_batch=prior_actions_batch,
+        )
+        
+        # Accumulate metrics
+        step_reward = jnp.mean(rewards_batch, axis=1)  # (n_envs,)
+        step_coverage = jnp.mean(info_batch["coverage_rate"])
+        step_collision = jnp.mean(new_env_states.is_colliding)
+        
+        # Check if done
+        all_done = jnp.all(dones_batch[:, 0])
+        
+        # Create new carry
+        new_carry = RolloutCarry(
+            key=key,
+            obs_batch=next_obs_batch,
+            env_states=new_env_states,
+            maddpg_state=new_maddpg_state,
+            episode_rewards=carry.episode_rewards + step_reward,
+            total_coverage=carry.total_coverage + step_coverage,
+            total_collision=carry.total_collision + step_collision,
+            done_flag=carry.done_flag | all_done,
+        )
+        
+        # Metrics for this step
+        metrics = RolloutMetrics(
+            reward=jnp.mean(step_reward),
+            coverage=step_coverage,
+            collision=step_collision,
+        )
+        
+        return new_carry, metrics
+    
+    @jax.jit
+    def jit_rollout(
+        key: jax.Array,
+        obs_batch: jax.Array,
+        env_states: AssemblyState,
+        maddpg_state: MADDPGState,
+    ) -> Tuple[RolloutCarry, RolloutMetrics]:
+        """Run a full episode rollout (JIT-compiled).
+        
+        Args:
+            key: Random key
+            obs_batch: Initial observations (n_envs, n_agents, obs_dim)
+            env_states: Initial environment states
+            maddpg_state: Initial MADDPG state
+            
+        Returns:
+            final_carry: Final state after rollout
+            all_metrics: Stacked metrics from all steps
+        """
+        initial_carry = RolloutCarry(
+            key=key,
+            obs_batch=obs_batch,
+            env_states=env_states,
+            maddpg_state=maddpg_state,
+            episode_rewards=jnp.zeros(n_envs),
+            total_coverage=jnp.array(0.0),
+            total_collision=jnp.array(0.0),
+            done_flag=jnp.array(False),
+        )
+        
+        # Run the scan over all steps
+        final_carry, all_metrics = jax.lax.scan(
+            rollout_step,
+            initial_carry,
+            jnp.arange(max_steps),
+        )
+        
+        return final_carry, all_metrics
+    
+    return jit_rollout
+
+
 def run_episode(
     env: AssemblySwarmEnv,
     maddpg: MADDPG,
@@ -204,9 +382,12 @@ def run_episode(
     config: AssemblyTrainConfig,
     vec_reset: callable,
     vec_step: callable,
+    jit_rollout_fn: Optional[callable] = None,
     explore: bool = True,
 ) -> Tuple[TrainingState, Dict[str, Any]]:
     """Run a single episode across all parallel environments.
+    
+    Uses JIT-compiled rollout if provided, otherwise falls back to Python loop.
     
     Args:
         env: Environment instance
@@ -216,6 +397,7 @@ def run_episode(
         config: Training configuration
         vec_reset: Vectorized reset function
         vec_step: Vectorized step function
+        jit_rollout_fn: Optional JIT-compiled rollout function
         explore: Whether to use exploration noise
         
     Returns:
@@ -227,104 +409,87 @@ def run_episode(
     n_envs = config.n_parallel_envs
     
     # Reset all parallel environments
-    key, *reset_keys = random.split(key, n_envs + 1)
-    reset_keys = jnp.stack(reset_keys)
-    obs_batch, env_states = vec_reset(reset_keys)  # (n_envs, n_agents, obs_dim)
-    
-    # Episode accumulators (per env)
-    episode_rewards = jnp.zeros(n_envs)
-    all_step_rewards = []
-    all_coverages = []
-    all_collisions = []
+    key, reset_key = random.split(key)
+    reset_keys = random.split(reset_key, n_envs)
+    obs_batch, env_states = vec_reset(reset_keys)
     
     step_start = time.time()
     
-    for step in range(config.max_steps):
-        key, action_key = random.split(key)
-        step_keys = random.split(key, n_envs)
-        
-        # For each parallel env, select actions for all agents
-        # obs_batch shape: (n_envs, n_agents, obs_dim)
-        # We'll process all agents across all envs at once
-        
-        # Flatten across envs for action selection
-        # obs_flat: (n_envs * n_agents, obs_dim) - but MADDPG expects list per agent
-        # For now, process each env sequentially (can be optimized later)
-        
-        all_actions = []
-        for env_idx in range(n_envs):
-            obs_list = [obs_batch[env_idx, i] for i in range(config.n_agents)]
-            actions, log_probs, maddpg_state = maddpg.select_actions(
-                random.fold_in(action_key, env_idx), maddpg_state, obs_list, explore=explore
-            )
-            all_actions.append(jnp.stack(actions))  # (n_agents, action_dim)
-        
-        actions_batch = jnp.stack(all_actions)  # (n_envs, n_agents, action_dim)
-        
-        # Step all environments in parallel
-        next_obs_batch, env_states, rewards_batch, dones_batch, info_batch = vec_step(
-            step_keys, env_states, actions_batch
+    # Use JIT-compiled rollout if available
+    if jit_rollout_fn is not None:
+        key, rollout_key = random.split(key)
+        final_carry, all_metrics = jit_rollout_fn(
+            rollout_key, obs_batch, env_states, maddpg_state
         )
-        # rewards_batch: (n_envs, n_agents)
-        # dones_batch: (n_envs, n_agents)
         
-        # Store transitions from all parallel envs
-        for env_idx in range(n_envs):
-            obs_list = [obs_batch[env_idx, i] for i in range(config.n_agents)]
-            next_obs_list = [next_obs_batch[env_idx, i] for i in range(config.n_agents)]
-            actions_list = [actions_batch[env_idx, i] for i in range(config.n_agents)]
-            rewards_list = [rewards_batch[env_idx, i:i+1] for i in range(config.n_agents)]
-            dones_list = [dones_batch[env_idx, i:i+1] for i in range(config.n_agents)]
+        # Extract results from carry
+        maddpg_state = final_carry.maddpg_state
+        env_states = final_carry.env_states
+        episode_rewards = final_carry.episode_rewards
+        total_coverage = final_carry.total_coverage
+        total_collision = final_carry.total_collision
+        num_steps = config.max_steps  # Always runs full episode with scan
+        
+    else:
+        # Fallback to Python loop (slower but useful for debugging)
+        episode_rewards = jnp.zeros(n_envs)
+        total_coverage = jnp.array(0.0)
+        total_collision = jnp.array(0.0)
+        num_steps = 0
+        
+        for step in range(config.max_steps):
+            key, action_key, step_key = random.split(key, 3)
+            step_keys = random.split(step_key, n_envs)
             
-            # Compute prior actions for regularization if needed
-            if config.prior_weight > 0:
-                prior_actions = compute_prior_policy(
-                    env_states.positions[env_idx],
-                    env_states.velocities[env_idx],
-                    env_states.grid_centers[env_idx],
-                    env_states.grid_mask[env_idx],
-                    env_states.l_cell[env_idx],
-                    params.reward_params.collision_threshold,
-                    params.d_sen,
-                )
-                prior_list = [prior_actions[i] for i in range(config.n_agents)]
-            else:
-                prior_list = None
-            
-            maddpg_state = maddpg.store_transition(
-                maddpg_state,
-                obs_list,
-                actions_list,
-                rewards_list,
-                next_obs_list,
-                dones_list,
-                action_priors=prior_list,
+            actions_batch, maddpg_state = maddpg.select_actions_batched(
+                action_key, maddpg_state, obs_batch, explore=explore
             )
-        
-        # Update observations for next step
-        obs_batch = next_obs_batch
-        
-        # Accumulate metrics across all parallel envs
-        step_reward = jnp.mean(rewards_batch)  # Mean across envs and agents
-        episode_rewards = episode_rewards + jnp.mean(rewards_batch, axis=1)  # Per env
-        all_step_rewards.append(float(step_reward))
-        
-        # Coverage and collision rates (average across parallel envs)
-        coverage = jnp.mean(jnp.array([info_batch["coverage_rate"]]))
-        collision = jnp.mean(env_states.is_colliding)
-        all_coverages.append(float(coverage))
-        all_collisions.append(float(collision))
-        
-        # Check if all envs are done
-        if jnp.all(dones_batch[:, 0]):
-            break
+            
+            next_obs_batch, env_states, rewards_batch, dones_batch, info_batch = vec_step(
+                step_keys, env_states, actions_batch
+            )
+            
+            if config.prior_weight > 0:
+                def compute_priors_single_env(positions, velocities, grid_centers, grid_mask, l_cell):
+                    return compute_prior_policy(
+                        positions, velocities, grid_centers, grid_mask, l_cell,
+                        params.reward_params.collision_threshold,
+                        params.d_sen,
+                    )
+                
+                prior_actions_batch = jax.vmap(compute_priors_single_env)(
+                    env_states.positions,
+                    env_states.velocities,
+                    env_states.grid_centers,
+                    env_states.grid_mask,
+                    env_states.l_cell,
+                )
+            else:
+                prior_actions_batch = None
+            
+            maddpg_state = maddpg.store_transitions_batched(
+                maddpg_state,
+                obs_batch,
+                actions_batch,
+                rewards_batch,
+                next_obs_batch,
+                dones_batch,
+                action_priors_batch=prior_actions_batch,
+            )
+            
+            obs_batch = next_obs_batch
+            episode_rewards = episode_rewards + jnp.mean(rewards_batch, axis=1)
+            total_coverage = total_coverage + jnp.mean(info_batch["coverage_rate"])
+            total_collision = total_collision + jnp.mean(env_states.is_colliding)
+            num_steps = step + 1
+            
+            if jnp.all(dones_batch[:, 0]):
+                break
     
     step_time = time.time() - step_start
     
-    # Update step counters (multiply by n_envs since we ran parallel envs)
-    total_steps = training_state.total_steps + (step + 1) * n_envs
-    
-    # Calculate mean episode reward across parallel envs
+    # Update step counters
+    total_steps = training_state.total_steps + num_steps * n_envs
     mean_episode_reward = float(jnp.mean(episode_rewards))
     
     # Update noise scale
@@ -347,15 +512,15 @@ def run_episode(
     
     metrics = {
         "episode_reward": mean_episode_reward,
-        "episode_reward_mean": np.mean(all_step_rewards),
-        "episode_reward_std": np.std(all_step_rewards),
-        "coverage_rate": np.mean(all_coverages),
-        "collision_rate": np.mean(all_collisions),
+        "episode_reward_mean": mean_episode_reward / num_steps if num_steps > 0 else 0.0,
+        "episode_reward_std": 0.0,
+        "coverage_rate": float(total_coverage) / num_steps if num_steps > 0 else 0.0,
+        "collision_rate": float(total_collision) / num_steps if num_steps > 0 else 0.0,
         "step_time": step_time,
         "noise_scale": float(noise_scale),
-        "steps_in_episode": step + 1,
+        "steps_in_episode": num_steps,
         "n_parallel_envs": n_envs,
-        "total_transitions": (step + 1) * n_envs,
+        "total_transitions": num_steps * n_envs,
     }
     
     return new_training_state, metrics
@@ -535,6 +700,11 @@ def train(
     # Create training state with parallel environments
     training_state, env, maddpg, params, vec_reset, vec_step = create_training_state(config, key)
     
+    # Create JIT-compiled rollout function for maximum speed
+    print("Creating JIT-compiled rollout function...")
+    jit_rollout_fn = create_jit_rollout_fn(maddpg, params, config, vec_step)
+    print("JIT rollout function created (will compile on first use)")
+    
     # Load checkpoint if resuming
     start_episode = 0
     if checkpoint_path is not None:
@@ -552,10 +722,11 @@ def train(
     training_start = time.time()
     
     for episode in range(start_episode, config.n_episodes):
-        # Run episode across all parallel environments
+        # Run episode across all parallel environments (using JIT-compiled rollout)
         episode_start = time.time()
         training_state, episode_metrics = run_episode(
-            env, maddpg, training_state, params, config, vec_reset, vec_step, explore=True
+            env, maddpg, training_state, params, config, vec_reset, vec_step,
+            jit_rollout_fn=jit_rollout_fn, explore=True
         )
         
         # Perform gradient updates
@@ -646,6 +817,8 @@ def train(
             if config.eval_save_video and eval_dir is not None:
                 try:
                     from visualize.renderer import create_animation
+                    # Create eval directory lazily (only when saving first video)
+                    eval_dir.mkdir(parents=True, exist_ok=True)
                     video_path = eval_dir / f"eval_ep{episode}.gif"
                     create_animation(
                         eval_states, params,
