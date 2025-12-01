@@ -1,0 +1,14 @@
+#pip install -U "jax[cuda12]" install jax first with correct cuda version
+# conda install -c conda-forge tk to install tkinter for rendering
+jax>=0.4.20
+jaxlib>=0.4.20
+flax>=0.8.0
+
+# Testing
+pytest>=7.0.0
+
+# Numerical computing
+numpy>=1.24.0
+
+matplotlib>=3.5.0
+
