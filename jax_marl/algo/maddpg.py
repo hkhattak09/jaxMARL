@@ -23,26 +23,48 @@ from flax import struct
 import optax
 from functools import partial
 
-from agents import (
-    DDPGAgentState,
-    AgentConfig,
-    create_agent,
-    create_agent_with_networks,
-    select_action,
-    select_action_with_noise,
-    select_target_action,
-    update_critic,
-    update_actor,
-    update_targets,
-    reset_noise,
-    get_noise_scale,
-    get_agent_params,
-    load_agent_params,
-)
-from networks import Actor, ActorDiscrete, Critic, CriticTwin
-from buffers import ReplayBuffer, ReplayBufferState, PerAgentReplayBuffer, Transition
-from noise import OUNoiseState, ou_noise_init
-from utils import soft_update
+try:
+    from .agents import (
+        DDPGAgentState,
+        AgentConfig,
+        create_agent,
+        create_agent_with_networks,
+        select_action,
+        select_action_with_noise,
+        select_target_action,
+        update_critic,
+        update_actor,
+        update_targets,
+        reset_noise,
+        get_noise_scale,
+        get_agent_params,
+        load_agent_params,
+    )
+    from .networks import Actor, ActorDiscrete, Critic, CriticTwin
+    from .buffers import ReplayBuffer, ReplayBufferState, PerAgentReplayBuffer, Transition
+    from .noise import OUNoiseState, ou_noise_init
+    from .utils import soft_update
+except ImportError:
+    from agents import (
+        DDPGAgentState,
+        AgentConfig,
+        create_agent,
+        create_agent_with_networks,
+        select_action,
+        select_action_with_noise,
+        select_target_action,
+        update_critic,
+        update_actor,
+        update_targets,
+        reset_noise,
+        get_noise_scale,
+        get_agent_params,
+        load_agent_params,
+    )
+    from networks import Actor, ActorDiscrete, Critic, CriticTwin
+    from buffers import ReplayBuffer, ReplayBufferState, PerAgentReplayBuffer, Transition
+    from noise import OUNoiseState, ou_noise_init
+    from utils import soft_update
 
 
 # ============================================================================

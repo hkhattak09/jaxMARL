@@ -23,13 +23,22 @@ import flax.linen as nn
 import optax
 from functools import partial
 
-from networks import Actor, ActorDiscrete, Critic, CriticTwin, create_maddpg_networks
-from utils import soft_update, hard_update, gumbel_softmax, onehot_from_logits
-from noise import (
-    gaussian_noise, add_gaussian_noise, GaussianNoiseParams,
-    OUNoiseState, OUNoiseParams, ou_noise_init, ou_noise_step, ou_noise_reset, add_ou_noise,
-    NoiseScheduler, NoiseSchedulerState,
-)
+try:
+    from .networks import Actor, ActorDiscrete, Critic, CriticTwin, create_maddpg_networks
+    from .utils import soft_update, hard_update, gumbel_softmax, onehot_from_logits
+    from .noise import (
+        gaussian_noise, add_gaussian_noise, GaussianNoiseParams,
+        OUNoiseState, OUNoiseParams, ou_noise_init, ou_noise_step, ou_noise_reset, add_ou_noise,
+        NoiseScheduler, NoiseSchedulerState,
+    )
+except ImportError:
+    from networks import Actor, ActorDiscrete, Critic, CriticTwin, create_maddpg_networks
+    from utils import soft_update, hard_update, gumbel_softmax, onehot_from_logits
+    from noise import (
+        gaussian_noise, add_gaussian_noise, GaussianNoiseParams,
+        OUNoiseState, OUNoiseParams, ou_noise_init, ou_noise_step, ou_noise_reset, add_ou_noise,
+        NoiseScheduler, NoiseSchedulerState,
+    )
 
 
 # ============================================================================
