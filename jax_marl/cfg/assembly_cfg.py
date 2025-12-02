@@ -8,8 +8,8 @@ faster training (see n_parallel_envs parameter).
 """
 
 
-# Remember to set the training steps to decay to (44% of total training epsiodes)*max_step/epsiode*n_envs in the training config when defining it, it is dependant on number of envs.
-# Remember to update buffer size as well for each config it is (1/12 * total epsiodes)*max_steps*n_env, to allow for off policy learning i.e you learn from previosu data as well you dont just forget
+# set the training steps to decay to (44% of total training epsiodes)*max_step/epsiode*n_envs in the training config when defining it, it is dependant on number of envs.
+# set buffer size for each config it is (1/12 * total epsiodes)*max_steps*n_env, to allow for off policy learning i.e you learn from previosu data as well you dont just forget
 
 from typing import Optional, NamedTuple
 from pathlib import Path
@@ -213,7 +213,7 @@ config = None
 # # Use this for full training runs
 config = AssemblyTrainConfig(
     # Environment
-    n_agents=25,
+    n_agents=20,
     n_parallel_envs=8,
     arena_size=5.0,
     agent_radius=0.1,
@@ -240,7 +240,7 @@ config = AssemblyTrainConfig(
     lr_critic=1e-3,
     gamma=0.95,
     tau=0.01,
-    buffer_size=400000,
+    buffer_size=240000,
     batch_size=2048,
     warmup_steps=5000,
     noise_scale_initial=0.5,
