@@ -31,7 +31,7 @@ class ObservationParams:
         d_sen: Sensing range for neighbors
         include_self_state: Whether to include agent's own state
         normalize_obs: Whether to normalize observations
-        l_max: Maximum arena dimension (for normalization)
+        l_max: Maximum arena dimension (for normalization) - should match arena_size/2
         vel_max: Maximum velocity (for normalization)
     """
     topo_nei_max: int = 6
@@ -39,7 +39,7 @@ class ObservationParams:
     d_sen: float = 3.0
     include_self_state: bool = True
     normalize_obs: bool = True
-    l_max: float = 2.4
+    l_max: float = 2.5  # Fixed: matches default arena_size/2 = 5.0/2
     vel_max: float = 0.8
 
 

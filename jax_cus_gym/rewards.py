@@ -35,19 +35,24 @@ class RewardParams:
     
     Attributes:
         reward_entering: Reward for being in target and not colliding
-        penalty_collision: Penalty for colliding with another agent
+        penalty_collision: Penalty for colliding with another agent (0.0 = no penalty, matches MARL)
         reward_exploration: Reward for exploring unoccupied areas
         collision_threshold: Distance threshold for collision penalty
         exploration_threshold: Distance threshold for exploration reward
         reward_mode: How to share rewards among agents
+        reward_clip_min: Minimum reward value (for clipping outliers)
+        reward_clip_max: Maximum reward value (for clipping outliers)
     """
     reward_entering: float = 1.0
-    penalty_collision: float = -0.5
+    penalty_collision: float = 0.0  # No penalty (matches original MARL C++ code)
     reward_exploration: float = 0.1
     collision_threshold: float = 0.15  # r_avoid in original
-    exploration_threshold: float = 0.07
+    exploration_threshold: float = 0.05  # Matches MARL's 0.05 threshold
     # Note: reward_mode is a string since Enum can't be in dataclass easily
     reward_mode: str = "individual"
+    # Reward clipping to prevent outliers from destabilizing training
+    reward_clip_min: float = -10.0
+    reward_clip_max: float = 10.0
 
 
 def compute_in_target(
@@ -257,17 +262,24 @@ def compute_rewards(
         d_sen
     )
     
-    # 4. Compute individual rewards
-    # Agent gets full reward if: in_target AND not_colliding AND exploring
+    # 4. Compute individual rewards (matches MARL C++ logic)
+    # Agent gets +1 reward ONLY if: in_target AND not_colliding AND exploring
+    # Otherwise gets 0 (no negative penalties - this matches the original MARL behavior)
     task_complete = in_target & ~is_colliding & (exploration > 0)
     
-    rewards = jnp.zeros(n_agents)
-    rewards = jnp.where(task_complete, reward_params.reward_entering, rewards)
+    rewards = jnp.where(task_complete, reward_params.reward_entering, 0.0)
     
-    # Add collision penalty
-    rewards = rewards + is_colliding.astype(jnp.float32) * reward_params.penalty_collision
+    # Optional collision penalty (disabled by default to match MARL, set penalty_collision < 0 to enable)
+    rewards = jnp.where(
+        reward_params.penalty_collision < 0,
+        rewards + is_colliding.astype(jnp.float32) * reward_params.penalty_collision,
+        rewards
+    )
     
-    # 5. Apply reward sharing mode
+    # 5. Apply reward clipping (before sharing to ensure consistent scale)
+    rewards = jnp.clip(rewards, reward_params.reward_clip_min, reward_params.reward_clip_max)
+    
+    # 6. Apply reward sharing mode
     if reward_params.reward_mode == "shared_mean":
         mean_reward = jnp.mean(rewards)
         rewards = jnp.full(n_agents, mean_reward)

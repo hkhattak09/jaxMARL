@@ -32,8 +32,11 @@ try:
         select_action,
         select_action_with_noise,
         select_target_action,
+        select_target_action_with_smoothing,
         update_critic,
         update_actor,
+        update_critic_td3,
+        update_actor_td3,
         update_targets,
         reset_noise,
         get_noise_scale,
@@ -53,8 +56,11 @@ except ImportError:
         select_action,
         select_action_with_noise,
         select_target_action,
+        select_target_action_with_smoothing,
         update_critic,
         update_actor,
+        update_critic_td3,
+        update_actor_td3,
         update_targets,
         reset_noise,
         get_noise_scale,
@@ -116,6 +122,12 @@ class MADDPGConfig(NamedTuple):
         max_grad_norm: Maximum gradient norm (None = no clipping)
         prior_weight: Weight for action prior regularization
         shared_critic: Whether to share critic across agents
+        
+        # TD3 enhancements
+        use_td3: Whether to use TD3 improvements (twin critics, delayed updates, target smoothing)
+        policy_delay: Update actor every N critic updates (TD3)
+        target_noise: Stddev of noise added to target actions (TD3 target policy smoothing)
+        target_noise_clip: Clip range for target noise (TD3)
     """
     n_agents: int
     obs_dims: Tuple[int, ...]
@@ -136,10 +148,15 @@ class MADDPGConfig(NamedTuple):
     update_every: int = 100
     updates_per_step: int = 1
     discrete_action: bool = False
-    use_layer_norm: bool = False
+    use_layer_norm: bool = True  # Enable layer norm for better training stability
     max_grad_norm: Optional[float] = None
     prior_weight: float = 0.0
     shared_critic: bool = False
+    # TD3 enhancements
+    use_td3: bool = True  # Enable TD3 by default for better convergence
+    policy_delay: int = 2  # Update actor every 2 critic updates
+    target_noise: float = 0.2  # Noise added to target actions
+    target_noise_clip: float = 0.5  # Clip range for target noise
 
 
 # ============================================================================
@@ -198,6 +215,12 @@ class MADDPG:
         # Critic input: global_state + all_actions
         self.critic_input_dim = self.global_state_dim + self.total_action_dim
         
+        # TD3 configuration
+        self.use_td3 = config.use_td3
+        self.policy_delay = config.policy_delay
+        self.target_noise = config.target_noise
+        self.target_noise_clip = config.target_noise_clip
+        
         # Create networks (shared across all agents if shared_critic)
         self.actors = []
         self.critics = []
@@ -218,10 +241,17 @@ class MADDPG:
             self.actors.append(actor)
             
             if not config.shared_critic or i == 0:
-                critic = Critic(
-                    hidden_dims=config.hidden_dims,
-                    use_layer_norm=config.use_layer_norm,
-                )
+                # Use CriticTwin for TD3, regular Critic otherwise
+                if config.use_td3:
+                    critic = CriticTwin(
+                        hidden_dims=config.hidden_dims,
+                        use_layer_norm=config.use_layer_norm,
+                    )
+                else:
+                    critic = Critic(
+                        hidden_dims=config.hidden_dims,
+                        use_layer_norm=config.use_layer_norm,
+                    )
                 self.critics.append(critic)
         
         if config.shared_critic:
@@ -625,6 +655,13 @@ class MADDPG:
     ) -> Tuple[MADDPGState, Dict[str, Any]]:
         """Perform one update step for all agents.
         
+        Supports both standard DDPG and TD3 modes based on config.use_td3.
+        
+        TD3 features:
+        - Twin critics (minimum Q-value for targets)
+        - Target policy smoothing (noise on target actions)
+        - Delayed policy updates (actor updated every policy_delay critic updates)
+        
         Args:
             key: JAX random key
             state: Current MADDPG state
@@ -670,14 +707,29 @@ class MADDPG:
             next_global_states = next_obs_flat
         
         # Compute target actions for all agents
-        # For each agent, extract their observation and compute target action
+        # For TD3: add smoothing noise to target actions
         target_actions_list = []
         for i, (actor, agent_state) in enumerate(zip(self.actors, state.agent_states)):
+            key, target_key = random.split(key)
             # Extract this agent's obs from batch: (batch, obs_dim)
             agent_next_obs = batch.next_obs[:, i, :self.obs_dims[i]]
-            target_action = select_target_action(
-                actor, agent_state.target_actor_params, agent_next_obs
-            )
+            
+            if self.use_td3:
+                # TD3: Target policy smoothing
+                target_action = select_target_action_with_smoothing(
+                    target_key,
+                    actor, 
+                    agent_state.target_actor_params, 
+                    agent_next_obs,
+                    target_noise=self.target_noise,
+                    target_noise_clip=self.target_noise_clip,
+                )
+            else:
+                # Standard DDPG
+                target_action = select_target_action(
+                    actor, agent_state.target_actor_params, agent_next_obs
+                )
+            
             # Pad if needed
             if target_action.shape[-1] < self.buffer.action_dim:
                 target_action = jnp.pad(
@@ -695,6 +747,10 @@ class MADDPG:
         total_actor_loss = 0.0
         total_critic_loss = 0.0
         
+        # Determine if we should update actor (TD3: delayed policy updates)
+        current_step = int(state.step)
+        should_update_actor = not self.use_td3 or (current_step % self.policy_delay == 0)
+        
         for agent_i in range(self.n_agents):
             key, update_key = random.split(key)
             
@@ -709,64 +765,91 @@ class MADDPG:
             # Agent's reward: (batch, 1)
             agent_reward = batch.rewards[:, agent_i:agent_i+1]
             
-            # Construct critic inputs
-            # Current: global_state + current_actions (flattened)
-            critic_input = jnp.concatenate([global_states, actions_flat], axis=-1)
-            
-            # Next: next_global_state + target_actions
-            next_critic_input = jnp.concatenate([next_global_states, target_actions], axis=-1)
-            
             # Done flag (use this agent's done)
             agent_dones = batch.dones[:, agent_i:agent_i+1]
             
             # Update critic
             key, critic_key = random.split(key)
-            agent_state, critic_info = update_critic(
-                agent_state=agent_state,
-                critic=critic,
-                actor=actor,
-                optimizer=self.critic_optimizer,
-                global_obs=global_states,
-                all_actions=actions_flat,
-                rewards=agent_reward,
-                next_global_obs=next_global_states,
-                next_all_actions=target_actions,
-                dones=agent_dones,
-                gamma=config.gamma,
-            )
+            if self.use_td3:
+                # TD3: Twin critic update
+                agent_state, critic_info = update_critic_td3(
+                    agent_state=agent_state,
+                    critic=critic,
+                    optimizer=self.critic_optimizer,
+                    global_obs=global_states,
+                    all_actions=actions_flat,
+                    rewards=agent_reward,
+                    next_global_obs=next_global_states,
+                    next_all_actions=target_actions,
+                    dones=agent_dones,
+                    gamma=config.gamma,
+                )
+            else:
+                # Standard DDPG critic update
+                agent_state, critic_info = update_critic(
+                    agent_state=agent_state,
+                    critic=critic,
+                    actor=actor,
+                    optimizer=self.critic_optimizer,
+                    global_obs=global_states,
+                    all_actions=actions_flat,
+                    rewards=agent_reward,
+                    next_global_obs=next_global_states,
+                    next_all_actions=target_actions,
+                    dones=agent_dones,
+                    gamma=config.gamma,
+                )
             
-            # Update actor
-            # Need to construct other agents' actions
-            # actions_flat has shape (batch, n_agents * action_dim)
-            action_dim = self.buffer.action_dim
-            action_start = agent_i * action_dim
-            action_end = action_start + action_dim
-            
-            other_actions_before = actions_flat[:, :action_start]
-            other_actions_after = actions_flat[:, action_end:]
-            all_actions_except_agent = jnp.concatenate(
-                [other_actions_before, other_actions_after], axis=-1
-            )
-            
-            # Get action prior for this agent if provided
-            agent_prior = None
-            if action_priors is not None:
-                agent_prior = action_priors[:, action_start:action_end]
-            
-            key, actor_key = random.split(key)
-            agent_state, actor_info = update_actor(
-                agent_state=agent_state,
-                actor=actor,
-                critic=critic,
-                optimizer=self.actor_optimizer,
-                global_obs=global_states,
-                agent_obs=agent_obs,
-                all_actions_except_agent=all_actions_except_agent,
-                agent_action_idx=agent_i,
-                action_dim=self.action_dims[agent_i],
-                action_prior=agent_prior,
-                prior_weight=config.prior_weight,
-            )
+            # Update actor (conditionally for TD3 delayed updates)
+            actor_info = {'actor_loss': jnp.array(0.0)}
+            if should_update_actor:
+                # Need to construct other agents' actions
+                action_dim = self.buffer.action_dim
+                action_start = agent_i * action_dim
+                action_end = action_start + action_dim
+                
+                other_actions_before = actions_flat[:, :action_start]
+                other_actions_after = actions_flat[:, action_end:]
+                all_actions_except_agent = jnp.concatenate(
+                    [other_actions_before, other_actions_after], axis=-1
+                )
+                
+                # Get action prior for this agent if provided
+                agent_prior = None
+                if action_priors is not None:
+                    agent_prior = action_priors[:, action_start:action_end]
+                
+                key, actor_key = random.split(key)
+                if self.use_td3:
+                    # TD3: Actor update using Q1 only
+                    agent_state, actor_info = update_actor_td3(
+                        agent_state=agent_state,
+                        actor=actor,
+                        critic=critic,
+                        optimizer=self.actor_optimizer,
+                        global_obs=global_states,
+                        agent_obs=agent_obs,
+                        all_actions_except_agent=all_actions_except_agent,
+                        agent_action_idx=agent_i,
+                        action_dim=self.action_dims[agent_i],
+                        action_prior=agent_prior,
+                        prior_weight=config.prior_weight,
+                    )
+                else:
+                    # Standard DDPG actor update
+                    agent_state, actor_info = update_actor(
+                        agent_state=agent_state,
+                        actor=actor,
+                        critic=critic,
+                        optimizer=self.actor_optimizer,
+                        global_obs=global_states,
+                        agent_obs=agent_obs,
+                        all_actions_except_agent=all_actions_except_agent,
+                        agent_action_idx=agent_i,
+                        action_dim=self.action_dims[agent_i],
+                        action_prior=agent_prior,
+                        prior_weight=config.prior_weight,
+                    )
             
             new_agent_states[agent_i] = agent_state
             
@@ -779,7 +862,8 @@ class MADDPG:
             info[f'agent_{agent_i}/actor_loss'] = actor_info['actor_loss']
             info[f'agent_{agent_i}/q_value'] = critic_info['q_values']
         
-        # Update all target networks
+        # Update all target networks (TD3: only when actor is updated for proper synchronization)
+        # Actually, in TD3 paper targets are always updated. Delayed updates only affect actor.
         for i in range(self.n_agents):
             new_agent_states[i] = update_targets(new_agent_states[i], config.tau)
         
@@ -803,6 +887,8 @@ class MADDPG:
         info['noise_scale'] = new_noise_scale
         info['actor_loss'] = total_actor_loss / self.n_agents
         info['critic_loss'] = total_critic_loss / self.n_agents
+        info['actor_updated'] = should_update_actor
+        info['use_td3'] = self.use_td3
         
         return new_state, info
     
@@ -812,6 +898,8 @@ class MADDPG:
         This method creates a closure over self that can be JIT-compiled.
         Call this once after initialization and use the returned function
         for training to get maximum performance.
+        
+        Supports both standard DDPG and TD3 modes based on config.use_td3.
         
         Returns:
             jit_update: JIT-compiled update function with signature:
@@ -827,6 +915,10 @@ class MADDPG:
         config = self.config
         obs_dims = self.obs_dims
         action_dims = self.action_dims
+        use_td3 = self.use_td3
+        policy_delay = self.policy_delay
+        target_noise = self.target_noise
+        target_noise_clip = self.target_noise_clip
         
         @jax.jit
         def jit_update(
@@ -854,12 +946,28 @@ class MADDPG:
                 next_global_states = next_obs_flat
                 
                 # Compute target actions for all agents
+                # For TD3: add smoothing noise to target actions
                 target_actions_list = []
                 for i in range(n_agents):
+                    key, target_key = random.split(key)
                     agent_next_obs = batch.next_obs[:, i, :obs_dims[i]]
-                    target_action = select_target_action(
-                        actors[i], state.agent_states[i].target_actor_params, agent_next_obs
-                    )
+                    
+                    if use_td3:
+                        # TD3: Target policy smoothing
+                        target_action = select_target_action_with_smoothing(
+                            target_key,
+                            actors[i], 
+                            state.agent_states[i].target_actor_params, 
+                            agent_next_obs,
+                            target_noise=target_noise,
+                            target_noise_clip=target_noise_clip,
+                        )
+                    else:
+                        # Standard DDPG
+                        target_action = select_target_action(
+                            actors[i], state.agent_states[i].target_actor_params, agent_next_obs
+                        )
+                    
                     if target_action.shape[-1] < buffer.action_dim:
                         target_action = jnp.pad(
                             target_action, 
@@ -868,6 +976,13 @@ class MADDPG:
                     target_actions_list.append(target_action)
                 
                 target_actions = jnp.stack(target_actions_list, axis=1).reshape(batch_size, -1)
+                
+                # Determine if we should update actor (TD3: delayed policy updates)
+                # Note: We use state.step which is the step BEFORE this update
+                should_update_actor = jnp.logical_or(
+                    jnp.logical_not(use_td3),
+                    (state.step % policy_delay) == 0
+                )
                 
                 # Update all agents
                 new_agent_states = list(state.agent_states)
@@ -882,22 +997,36 @@ class MADDPG:
                     agent_reward = batch.rewards[:, agent_i:agent_i+1]
                     agent_dones = batch.dones[:, agent_i:agent_i+1]
                     
-                    # Update critic
-                    agent_state, critic_info = update_critic(
-                        agent_state=agent_state,
-                        critic=critics[agent_i],
-                        actor=actors[agent_i],
-                        optimizer=critic_optimizer,
-                        global_obs=global_states,
-                        all_actions=actions_flat,
-                        rewards=agent_reward,
-                        next_global_obs=next_global_states,
-                        next_all_actions=target_actions,
-                        dones=agent_dones,
-                        gamma=config.gamma,
-                    )
+                    # Update critic (TD3 or standard DDPG)
+                    if use_td3:
+                        agent_state, critic_info = update_critic_td3(
+                            agent_state=agent_state,
+                            critic=critics[agent_i],
+                            optimizer=critic_optimizer,
+                            global_obs=global_states,
+                            all_actions=actions_flat,
+                            rewards=agent_reward,
+                            next_global_obs=next_global_states,
+                            next_all_actions=target_actions,
+                            dones=agent_dones,
+                            gamma=config.gamma,
+                        )
+                    else:
+                        agent_state, critic_info = update_critic(
+                            agent_state=agent_state,
+                            critic=critics[agent_i],
+                            actor=actors[agent_i],
+                            optimizer=critic_optimizer,
+                            global_obs=global_states,
+                            all_actions=actions_flat,
+                            rewards=agent_reward,
+                            next_global_obs=next_global_states,
+                            next_all_actions=target_actions,
+                            dones=agent_dones,
+                            gamma=config.gamma,
+                        )
                     
-                    # Update actor
+                    # Update actor (conditionally for TD3)
                     action_dim = buffer.action_dim
                     action_start = agent_i * action_dim
                     action_end = action_start + action_dim
@@ -911,18 +1040,58 @@ class MADDPG:
                     if batch.action_priors is not None and config.prior_weight > 0:
                         agent_prior = batch.action_priors[:, agent_i, :]
                     
-                    agent_state, actor_info = update_actor(
-                        agent_state=agent_state,
-                        actor=actors[agent_i],
-                        critic=critics[agent_i],
-                        optimizer=actor_optimizer,
-                        global_obs=global_states,
-                        agent_obs=agent_obs,
-                        all_actions_except_agent=all_actions_except_agent,
-                        agent_action_idx=agent_i,
-                        action_dim=action_dims[agent_i],
-                        action_prior=agent_prior,
-                        prior_weight=config.prior_weight,
+                    # Actor update function
+                    def do_actor_update(state_and_info):
+                        ag_state, _ = state_and_info
+                        if use_td3:
+                            return update_actor_td3(
+                                agent_state=ag_state,
+                                actor=actors[agent_i],
+                                critic=critics[agent_i],
+                                optimizer=actor_optimizer,
+                                global_obs=global_states,
+                                agent_obs=agent_obs,
+                                all_actions_except_agent=all_actions_except_agent,
+                                agent_action_idx=agent_i,
+                                action_dim=action_dims[agent_i],
+                                action_prior=agent_prior,
+                                prior_weight=config.prior_weight,
+                            )
+                        else:
+                            return update_actor(
+                                agent_state=ag_state,
+                                actor=actors[agent_i],
+                                critic=critics[agent_i],
+                                optimizer=actor_optimizer,
+                                global_obs=global_states,
+                                agent_obs=agent_obs,
+                                all_actions_except_agent=all_actions_except_agent,
+                                agent_action_idx=agent_i,
+                                action_dim=action_dims[agent_i],
+                                action_prior=agent_prior,
+                                prior_weight=config.prior_weight,
+                            )
+                    
+                    def skip_actor_update(state_and_info):
+                        ag_state, _ = state_and_info
+                        # Return same structure as do_actor_update for jax.lax.cond compatibility
+                        dummy_info = {
+                            'actor_loss': jnp.array(0.0),
+                            'actor_grad_norm': jnp.array(0.0),
+                            'policy_loss': jnp.array(0.0),
+                            'reg_loss': jnp.array(0.0),
+                            'q_value_mean': jnp.array(0.0),
+                            'action_mean': jnp.array(0.0),
+                            'action_std': jnp.array(0.0),
+                        }
+                        return ag_state, dummy_info
+                    
+                    # Use lax.cond for conditional actor update (JAX-compatible)
+                    agent_state, actor_info = jax.lax.cond(
+                        should_update_actor,
+                        do_actor_update,
+                        skip_actor_update,
+                        (agent_state, None),
                     )
                     
                     # Update targets

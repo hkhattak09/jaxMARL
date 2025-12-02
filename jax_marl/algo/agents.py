@@ -439,6 +439,47 @@ def select_target_action(
     return select_action(actor, target_actor_params, obs, training=False)
 
 
+def select_target_action_with_smoothing(
+    key: jax.Array,
+    actor: nn.Module,
+    target_actor_params: Any,
+    obs: jax.Array,
+    target_noise: float,
+    target_noise_clip: float,
+    clip_low: float = -1.0,
+    clip_high: float = 1.0,
+) -> jax.Array:
+    """Select target action with smoothing noise (TD3).
+    
+    Adds clipped noise to target actions for target policy smoothing.
+    This reduces overestimation by smoothing the value estimate.
+    
+    Args:
+        key: JAX random key
+        actor: Actor network
+        target_actor_params: Target actor parameters
+        obs: Observation(s)
+        target_noise: Standard deviation of noise
+        target_noise_clip: Clip range for noise
+        clip_low: Lower bound for action clipping
+        clip_high: Upper bound for action clipping
+        
+    Returns:
+        action: Smoothed target action(s)
+    """
+    # Get base target action
+    action = select_action(actor, target_actor_params, obs, training=False)
+    
+    # Add clipped noise for target policy smoothing
+    noise = random.normal(key, action.shape) * target_noise
+    noise = jnp.clip(noise, -target_noise_clip, target_noise_clip)
+    
+    # Clip final action to valid range
+    action = jnp.clip(action + noise, clip_low, clip_high)
+    
+    return action
+
+
 # ============================================================================
 # Update Functions
 # ============================================================================
@@ -498,6 +539,73 @@ def compute_critic_loss(
         'q_values': jnp.mean(q_values),
         'target_q_values': jnp.mean(targets),
         'td_error': jnp.mean(jnp.abs(q_values - targets)),
+    }
+    
+    return loss, info
+
+
+def compute_critic_loss_td3(
+    critic: nn.Module,
+    critic_params: Any,
+    target_critic_params: Any,
+    global_obs: jax.Array,
+    all_actions: jax.Array,
+    rewards: jax.Array,
+    next_global_obs: jax.Array,
+    next_all_actions: jax.Array,
+    dones: jax.Array,
+    gamma: float,
+) -> Tuple[jax.Array, Dict[str, jax.Array]]:
+    """Compute TD3 critic loss with twin critics.
+    
+    Uses minimum of two Q-values for target to reduce overestimation.
+    Both critics are trained on the same target.
+    
+    Loss = MSE(Q1(s, a), target) + MSE(Q2(s, a), target)
+    where target = r + gamma * min(Q1_target, Q2_target)
+    
+    Args:
+        critic: CriticTwin network
+        critic_params: Current critic parameters (for both critics)
+        target_critic_params: Target critic parameters (for both critics)
+        global_obs: Current global observations (batch, global_obs_dim)
+        all_actions: All agents' actions (batch, total_action_dim)
+        rewards: Rewards received (batch, 1)
+        next_global_obs: Next global observations (batch, global_obs_dim)
+        next_all_actions: Next (smoothed) actions from all agents (batch, total_action_dim)
+        dones: Done flags (batch, 1)
+        gamma: Discount factor
+        
+    Returns:
+        loss: Scalar loss value (sum of both critic losses)
+        info: Dict with additional info (q_values, targets, etc.)
+    """
+    # Compute current Q-values from both critics
+    q1, q2 = critic.apply(critic_params, global_obs, all_actions)
+    
+    # Compute target Q-values from both target critics
+    target_q1, target_q2 = critic.apply(target_critic_params, next_global_obs, next_all_actions)
+    
+    # Take minimum for reduced overestimation (key TD3 insight)
+    next_q_min = jnp.minimum(target_q1, target_q2)
+    
+    # Bellman target using minimum Q
+    targets = rewards + gamma * next_q_min * (1 - dones)
+    targets = jax.lax.stop_gradient(targets)
+    
+    # MSE loss for both critics
+    loss1 = jnp.mean((q1 - targets) ** 2)
+    loss2 = jnp.mean((q2 - targets) ** 2)
+    loss = loss1 + loss2
+    
+    info = {
+        'q1_values': jnp.mean(q1),
+        'q2_values': jnp.mean(q2),
+        'q_values': jnp.mean(jnp.minimum(q1, q2)),  # Report min for comparison
+        'target_q_values': jnp.mean(targets),
+        'td_error': jnp.mean(jnp.abs(jnp.minimum(q1, q2) - targets)),
+        'critic1_loss': loss1,
+        'critic2_loss': loss2,
     }
     
     return loss, info
@@ -576,6 +684,79 @@ def compute_actor_loss(
         'policy_loss': policy_loss,
         'reg_loss': reg_loss,
         'q_value_mean': jnp.mean(q_value),
+        'action_mean': jnp.mean(policy_action),
+        'action_std': jnp.std(policy_action),
+    }
+    
+    return loss, info
+
+
+def compute_actor_loss_td3(
+    actor: nn.Module,
+    actor_params: Any,
+    critic: nn.Module,
+    critic_params: Any,
+    global_obs: jax.Array,
+    agent_obs: jax.Array,
+    all_actions_except_agent: jax.Array,
+    agent_action_idx: int,
+    action_dim: int,
+    action_prior: Optional[jax.Array] = None,
+    prior_weight: float = 0.0,
+) -> Tuple[jax.Array, Dict[str, jax.Array]]:
+    """Compute actor loss for TD3 (uses only Q1 from twin critics).
+    
+    Loss = -E[Q1(s, a)] + prior_weight * MSE(a, a_prior)
+    
+    Args:
+        actor: Actor network
+        actor_params: Actor parameters
+        critic: CriticTwin network  
+        critic_params: Critic parameters (use current, not target)
+        global_obs: Global observations for critic (batch, global_obs_dim)
+        agent_obs: This agent's observations (batch, obs_dim)
+        all_actions_except_agent: Actions from all other agents
+        agent_action_idx: Index to insert this agent's action
+        action_dim: This agent's action dimension
+        action_prior: Prior actions for regularization (optional)
+        prior_weight: Weight for prior regularization
+        
+    Returns:
+        loss: Scalar loss value
+        info: Dict with additional info
+    """
+    # Get current policy action
+    policy_action = actor.apply(actor_params, agent_obs, training=True)
+    
+    # Construct full action vector for critic
+    batch_size = agent_obs.shape[0]
+    
+    if all_actions_except_agent is not None and all_actions_except_agent.shape[-1] > 0:
+        insert_idx = agent_action_idx * action_dim
+        before = all_actions_except_agent[:, :insert_idx]
+        after = all_actions_except_agent[:, insert_idx:]
+        all_actions = jnp.concatenate([before, policy_action, after], axis=-1)
+    else:
+        all_actions = policy_action
+    
+    # Use only Q1 for policy gradient (TD3 requirement)
+    # CriticTwin returns (q1, q2), we take only q1
+    q1_value, _ = critic.apply(critic_params, global_obs, all_actions)
+    policy_loss = -jnp.mean(q1_value)
+    
+    # Prior regularization
+    reg_loss = jnp.array(0.0)
+    if action_prior is not None and prior_weight > 0:
+        valid_mask = jnp.any(jnp.abs(action_prior) > 1e-6, axis=-1, keepdims=True)
+        mse = jnp.sum((policy_action - action_prior) ** 2, axis=-1, keepdims=True)
+        reg_loss = jnp.sum(mse * valid_mask) / (jnp.sum(valid_mask) + 1e-8)
+    
+    loss = policy_loss + prior_weight * reg_loss
+    
+    info = {
+        'policy_loss': policy_loss,
+        'reg_loss': reg_loss,
+        'q_value_mean': jnp.mean(q1_value),
         'action_mean': jnp.mean(policy_action),
         'action_std': jnp.std(policy_action),
     }
@@ -685,6 +866,129 @@ def update_actor(
             actor_params=actor_params,
             critic=critic,
             critic_params=agent_state.critic_params,  # Use current critic
+            global_obs=global_obs,
+            agent_obs=agent_obs,
+            all_actions_except_agent=all_actions_except_agent,
+            agent_action_idx=agent_action_idx,
+            action_dim=action_dim,
+            action_prior=action_prior,
+            prior_weight=prior_weight,
+        )
+    
+    (loss, info), grads = jax.value_and_grad(loss_fn, has_aux=True)(agent_state.actor_params)
+    
+    updates, new_opt_state = optimizer.update(grads, agent_state.actor_opt_state, agent_state.actor_params)
+    new_actor_params = optax.apply_updates(agent_state.actor_params, updates)
+    
+    new_agent_state = agent_state.replace(
+        actor_params=new_actor_params,
+        actor_opt_state=new_opt_state,
+    )
+    
+    info['actor_loss'] = loss
+    info['actor_grad_norm'] = optax.global_norm(grads)
+    
+    return new_agent_state, info
+
+
+def update_critic_td3(
+    agent_state: DDPGAgentState,
+    critic: nn.Module,
+    optimizer: optax.GradientTransformation,
+    global_obs: jax.Array,
+    all_actions: jax.Array,
+    rewards: jax.Array,
+    next_global_obs: jax.Array,
+    next_all_actions: jax.Array,
+    dones: jax.Array,
+    gamma: float,
+) -> Tuple[DDPGAgentState, Dict[str, jax.Array]]:
+    """Update twin critic networks (TD3).
+    
+    Args:
+        agent_state: Current agent state
+        critic: CriticTwin network
+        optimizer: Critic optimizer
+        global_obs: Current global observations
+        all_actions: All agents' current actions
+        rewards: Rewards
+        next_global_obs: Next global observations
+        next_all_actions: All agents' next (smoothed) actions
+        dones: Done flags
+        gamma: Discount factor
+        
+    Returns:
+        new_agent_state: Updated agent state
+        info: Training info dict
+    """
+    def loss_fn(critic_params):
+        return compute_critic_loss_td3(
+            critic=critic,
+            critic_params=critic_params,
+            target_critic_params=agent_state.target_critic_params,
+            global_obs=global_obs,
+            all_actions=all_actions,
+            rewards=rewards,
+            next_global_obs=next_global_obs,
+            next_all_actions=next_all_actions,
+            dones=dones,
+            gamma=gamma,
+        )
+    
+    (loss, info), grads = jax.value_and_grad(loss_fn, has_aux=True)(agent_state.critic_params)
+    
+    updates, new_opt_state = optimizer.update(grads, agent_state.critic_opt_state, agent_state.critic_params)
+    new_critic_params = optax.apply_updates(agent_state.critic_params, updates)
+    
+    new_agent_state = agent_state.replace(
+        critic_params=new_critic_params,
+        critic_opt_state=new_opt_state,
+    )
+    
+    info['critic_loss'] = loss
+    info['critic_grad_norm'] = optax.global_norm(grads)
+    
+    return new_agent_state, info
+
+
+def update_actor_td3(
+    agent_state: DDPGAgentState,
+    actor: nn.Module,
+    critic: nn.Module,
+    optimizer: optax.GradientTransformation,
+    global_obs: jax.Array,
+    agent_obs: jax.Array,
+    all_actions_except_agent: jax.Array,
+    agent_action_idx: int,
+    action_dim: int,
+    action_prior: Optional[jax.Array] = None,
+    prior_weight: float = 0.0,
+) -> Tuple[DDPGAgentState, Dict[str, jax.Array]]:
+    """Update actor network using TD3 (uses Q1 only).
+    
+    Args:
+        agent_state: Current agent state
+        actor: Actor network
+        critic: CriticTwin network
+        optimizer: Actor optimizer
+        global_obs: Global observations for critic
+        agent_obs: This agent's observations
+        all_actions_except_agent: Actions from other agents
+        agent_action_idx: Index for this agent's action
+        action_dim: This agent's action dimension
+        action_prior: Optional prior actions
+        prior_weight: Weight for prior regularization
+        
+    Returns:
+        new_agent_state: Updated agent state
+        info: Training info dict
+    """
+    def loss_fn(actor_params):
+        return compute_actor_loss_td3(
+            actor=actor,
+            actor_params=actor_params,
+            critic=critic,
+            critic_params=agent_state.critic_params,
             global_obs=global_obs,
             agent_obs=agent_obs,
             all_actions_except_agent=all_actions_except_agent,

@@ -7,6 +7,10 @@ With JAX, you can also run multiple parallel environments using vmap for
 faster training (see n_parallel_envs parameter).
 """
 
+
+# Remember to set the training steps to decay to (44% of total training epsiodes)*max_step/epsiode*n_envs in the training config when defining it, it is dependant on number of envs.
+# Remember to update buffer size as well for each config it is (1/12 * total epsiodes)*max_steps*n_env, to allow for off policy learning i.e you learn from previosu data as well you dont just forget
+
 from typing import Optional, NamedTuple
 from pathlib import Path
 
@@ -57,13 +61,19 @@ class AssemblyTrainConfig(NamedTuple):
     warmup_steps: int = 5000            # Steps before training starts
     
     noise_scale_initial: float = 0.9    # Initial exploration noise
-    noise_scale_final: float = 0.1      # Final exploration noise
+    noise_scale_final: float = 0.5      # Final exploration noise
     noise_decay_steps: int = 100000     # Steps to decay noise
     
     update_every: int = 100             # Steps between gradient updates
     updates_per_step: int = 30          # Gradient updates per training step
     
     prior_weight: float = 0.3           # LLM prior regularization (0 = disabled)
+    
+    # ================== TD3 Enhancements ==================
+    use_td3: bool = True                # Enable TD3 (twin critics, delayed updates, smoothing)
+    policy_delay: int = 2               # Update actor every N critic updates
+    target_noise: float = 0.2           # Stddev of noise for target smoothing
+    target_noise_clip: float = 0.5      # Clip range for target noise
     
     # ================== Training ==================
     seed: int = 226                     # Random seed
@@ -122,12 +132,12 @@ config = None
 #     lr_critic=1e-3,
 #     gamma=0.95,
 #     tau=0.01,
-#     buffer_size=1000,
+#     buffer_size=833,
 #     batch_size=64,
 #     warmup_steps=100,
 #     noise_scale_initial=0.9,
 #     noise_scale_final=0.1,
-#     noise_decay_steps=1000,
+#     noise_decay_steps=4400,
 #     update_every=50,
 #     updates_per_step=5,
 #     prior_weight=0.3,
@@ -147,64 +157,12 @@ config = None
 #     eval_dir=None,
 # )
 
-# # -------------------- SMALL SCALE EXPERIMENT --------------------
-# # Use this for quick experiments with fewer agents
-# config = AssemblyTrainConfig(
-#     # Environment
-#     n_agents=10,
-#     n_parallel_envs=4,
-#     arena_size=5.0,
-#     agent_radius=0.1,
-#     max_velocity=0.8,
-#     max_acceleration=1.0,
-#     # Observation
-#     k_neighbors=6,
-#     d_sen=3.0,
-#     include_self_state=True,
-#     # Physics
-#     dt=0.1,
-#     # Episode
-#     max_steps=150,
-#     # Domain randomization
-#     randomize_shape=True,
-#     randomize_rotation=True,
-#     randomize_scale=True,
-#     randomize_offset=True,
-#     # Reward
-#     reward_mode="individual",
-#     # Algorithm
-#     hidden_dim=256,
-#     lr_actor=1e-4,
-#     lr_critic=1e-3,
-#     gamma=0.95,
-#     tau=0.01,
-#     buffer_size=20000,
-#     batch_size=512,
-#     warmup_steps=2000,
-#     noise_scale_initial=0.9,
-#     noise_scale_final=0.1,
-#     noise_decay_steps=50000,
-#     update_every=100,
-#     updates_per_step=20,
-#     prior_weight=0.3,
-#     # Training
-#     seed=226,
-#     n_episodes=1000,
-#     log_interval=10,
-#     save_interval=50,
-#     eval_interval=25,
-#     # Paths
-#     shape_file=None,
-#     checkpoint_dir=None,
-#     log_dir=None,
-# )
-
-# # -------------------- FULL SCALE TRAINING --------------------
-# # Use this for full training runs
+# -------------------- SMALL SCALE EXPERIMENT --------------------
+# Use this for quick experiments with fewer agents
 config = AssemblyTrainConfig(
     # Environment
-    n_agents=30,
-    n_parallel_envs=8,
+    n_agents=10,
+    n_parallel_envs=4,
     arena_size=5.0,
     agent_radius=0.1,
     max_velocity=0.8,
@@ -216,7 +174,7 @@ config = AssemblyTrainConfig(
     # Physics
     dt=0.1,
     # Episode
-    max_steps=200,
+    max_steps=150,
     # Domain randomization
     randomize_shape=True,
     randomize_rotation=True,
@@ -231,25 +189,77 @@ config = AssemblyTrainConfig(
     gamma=0.95,
     tau=0.01,
     buffer_size=50000,
-    batch_size=2048,
-    warmup_steps=5000,
-    noise_scale_initial=0.5,
+    batch_size=512,
+    warmup_steps=2000,
+    noise_scale_initial=0.9,
     noise_scale_final=0.1,
-    noise_decay_steps=100000,
+    noise_decay_steps=264000,
     update_every=100,
-    updates_per_step=30,
-    prior_weight=0.5,
+    updates_per_step=20,
+    prior_weight=0.3,
     # Training
     seed=226,
-    n_episodes=3000,
+    n_episodes=1000,
     log_interval=1,
-    save_interval=100,
-    eval_interval=50,
+    save_interval=50,
+    eval_interval=25,
     # Paths
     shape_file=None,
     checkpoint_dir=None,
     log_dir=None,
 )
+
+# # -------------------- FULL SCALE TRAINING --------------------
+# # Use this for full training runs
+# config = AssemblyTrainConfig(
+#     # Environment
+#     n_agents=30,
+#     n_parallel_envs=8,
+#     arena_size=5.0,
+#     agent_radius=0.1,
+#     max_velocity=0.8,
+#     max_acceleration=1.0,
+#     # Observation
+#     k_neighbors=6,
+#     d_sen=3.0,
+#     include_self_state=True,
+#     # Physics
+#     dt=0.1,
+#     # Episode
+#     max_steps=200,
+#     # Domain randomization
+#     randomize_shape=True,
+#     randomize_rotation=True,
+#     randomize_scale=True,
+#     randomize_offset=True,
+#     # Reward
+#     reward_mode="individual",
+#     # Algorithm
+#     hidden_dim=256,
+#     lr_actor=1e-4,
+#     lr_critic=1e-3,
+#     gamma=0.95,
+#     tau=0.01,
+#     buffer_size=,
+#     batch_size=400000,
+#     warmup_steps=5000,
+#     noise_scale_initial=0.5,
+#     noise_scale_final=0.1,
+#     noise_decay_steps=2112000,
+#     update_every=100,
+#     updates_per_step=30,
+#     prior_weight=0.5,
+#     # Training
+#     seed=226,
+#     n_episodes=3000,
+#     log_interval=1,
+#     save_interval=100,
+#     eval_interval=50,
+#     # Paths
+#     shape_file=None,
+#     checkpoint_dir=None,
+#     log_dir=None,
+# )
 
 
 # ============================================================================
@@ -352,6 +362,11 @@ def config_to_maddpg_config(config: AssemblyTrainConfig, obs_dim: int, action_di
         update_every=config.update_every,
         updates_per_step=config.updates_per_step,
         prior_weight=config.prior_weight,
+        # TD3 enhancements
+        use_td3=config.use_td3,
+        policy_delay=config.policy_delay,
+        target_noise=config.target_noise,
+        target_noise_clip=config.target_noise_clip,
     )
 
 
