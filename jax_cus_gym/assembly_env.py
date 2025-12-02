@@ -27,7 +27,13 @@ from observations import (
     compute_observations,
     get_k_nearest_neighbors_all_agents,
 )
-from rewards import RewardParams, compute_rewards
+from rewards import (
+    RewardParams,
+    compute_rewards,
+    REWARD_MODE_INDIVIDUAL,
+    REWARD_MODE_SHARED_MEAN,
+    REWARD_MODE_SHARED_MAX,
+)
 from shape_loader import (
     ShapeLibrary,
     load_shapes_from_pickle,
@@ -136,8 +142,8 @@ class AssemblyParams:
         # Trajectory
         traj_len: Length of trajectory history
         
-        # Reward sharing
-        reward_mode: "individual", "shared_mean", or "shared_max"
+        # Reward sharing (use integer constants from rewards.py)
+        reward_mode: 0=individual, 1=shared_mean, 2=shared_max
     """
     # Arena
     arena_size: float = 5.0
@@ -173,8 +179,8 @@ class AssemblyParams:
     # Trajectory
     traj_len: int = 15
     
-    # Reward sharing
-    reward_mode: str = "individual"  # "individual", "shared_mean", "shared_max"
+    # Reward sharing (use integer: 0=individual, 1=shared_mean, 2=shared_max)
+    reward_mode: int = 0  # REWARD_MODE_INDIVIDUAL
 
 
 class AssemblySwarmEnv(MultiAgentEnv):
@@ -377,14 +383,9 @@ class AssemblySwarmEnv(MultiAgentEnv):
             boundary_height=half_arena,
         )
         
-        # Clip velocities
-        speed = jnp.linalg.norm(new_velocities, axis=-1, keepdims=True)
-        speed_clipped = jnp.minimum(speed, params.max_velocity)
-        new_velocities = jnp.where(
-            speed > 0,
-            new_velocities * speed_clipped / (speed + 1e-8),
-            new_velocities,
-        )
+        # Clip velocities per-component (matches C++ MARL: np.clip(dp, -Vel_max, Vel_max))
+        # This clips each velocity component independently, not the magnitude
+        new_velocities = jnp.clip(new_velocities, -params.max_velocity, params.max_velocity)
         
         # Update trajectory (circular buffer)
         new_traj_idx = (state.traj_idx + 1) % params.traj_len
@@ -503,22 +504,33 @@ class AssemblySwarmEnv(MultiAgentEnv):
     def _apply_reward_sharing(
         self,
         rewards: jnp.ndarray,
-        mode: str,
+        mode: int,
     ) -> jnp.ndarray:
-        """Apply reward sharing mode."""
-        if mode == "shared_mean":
-            return jnp.full_like(rewards, jnp.mean(rewards))
-        elif mode == "shared_max":
-            return jnp.full_like(rewards, jnp.max(rewards))
-        else:  # individual
-            return rewards
+        """Apply reward sharing mode (JIT-compatible with jnp.where).
+        
+        Args:
+            rewards: Individual rewards, shape (n_agents,)
+            mode: 0=individual, 1=shared_mean, 2=shared_max
+        """
+        mean_reward = jnp.mean(rewards)
+        max_reward = jnp.max(rewards)
+        
+        return jnp.where(
+            mode == 1,  # REWARD_MODE_SHARED_MEAN
+            jnp.full_like(rewards, mean_reward),
+            jnp.where(
+                mode == 2,  # REWARD_MODE_SHARED_MAX
+                jnp.full_like(rewards, max_reward),
+                rewards  # individual mode (mode == 0)
+            )
+        )
     
     def _get_observations(
         self,
         state: AssemblyState,
         params: AssemblyParams,
     ) -> jnp.ndarray:
-        """Compute observations."""
+        """Compute observations (internal use)."""
         return compute_observations(
             state.positions,
             state.velocities,
@@ -529,6 +541,22 @@ class AssemblySwarmEnv(MultiAgentEnv):
             params.arena_size / 2,
             params.arena_size / 2,
         )
+    
+    def get_obs(
+        self,
+        state: AssemblyState,
+        params: AssemblyParams,
+    ) -> jnp.ndarray:
+        """Compute observations from state (public API).
+        
+        Args:
+            state: Current environment state
+            params: Environment parameters
+            
+        Returns:
+            obs: Observations for all agents, shape (n_agents, obs_dim)
+        """
+        return self._get_observations(state, params)
     
     def get_trajectory(
         self,
@@ -803,7 +831,7 @@ if __name__ == "__main__":
     print(f"Trajectory shape: {traj.shape}")
     
     # Test reward sharing
-    params_mean = params.replace(reward_mode="shared_mean")
+    params_mean = params.replace(reward_mode=1)  # REWARD_MODE_SHARED_MEAN
     _, _, rewards_mean, _, _ = env.step(step_key, state, prior_actions, params_mean)
     print(f"Shared mean rewards: all equal = {jnp.allclose(rewards_mean, rewards_mean[0])}")
     

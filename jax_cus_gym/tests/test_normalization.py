@@ -94,85 +94,76 @@ def test_observation_normalization():
 
 
 def test_reward_clipping():
-    """Test that reward clipping is working."""
+    """Test that rewards are NOT clipped (matches C++ MARL).
+    
+    C++ MARL outputs rewards directly as 0 or 1, with no clipping.
+    We verify that RewardParams no longer has clipping parameters
+    and that rewards match expected values without modification.
+    """
     from rewards import RewardParams, compute_rewards
     from observations import get_k_nearest_neighbors_all_agents
     
     print("\n" + "="*60)
-    print("Testing Reward Clipping")
+    print("Testing Reward Behavior (No Clipping - Matches C++ MARL)")
     print("="*60)
     
-    # Check that clipping params exist
+    # Verify clipping params have been removed
     reward_params = RewardParams()
     print(f"\nRewardParams defaults:")
-    print(f"  reward_clip_min: {reward_params.reward_clip_min}")
-    print(f"  reward_clip_max: {reward_params.reward_clip_max}")
+    print(f"  reward_entering: {reward_params.reward_entering}")
+    print(f"  penalty_collision: {reward_params.penalty_collision}")
     
-    assert hasattr(reward_params, 'reward_clip_min'), "reward_clip_min not found"
-    assert hasattr(reward_params, 'reward_clip_max'), "reward_clip_max not found"
-    assert reward_params.reward_clip_min == -10.0, f"Expected -10.0, got {reward_params.reward_clip_min}"
-    assert reward_params.reward_clip_max == 10.0, f"Expected 10.0, got {reward_params.reward_clip_max}"
+    # Confirm no clipping attributes exist (they were removed to match C++)
+    assert not hasattr(reward_params, 'reward_clip_min'), \
+        "reward_clip_min should not exist (removed to match C++ MARL)"
+    assert not hasattr(reward_params, 'reward_clip_max'), \
+        "reward_clip_max should not exist (removed to match C++ MARL)"
     
-    # Test that clipping actually works by creating extreme reward scenario
-    n_agents = 10
+    # Test that rewards are exactly 0 or 1 (matching C++ behavior)
+    n_agents = 5
     key = random.PRNGKey(42)
     
-    # Create positions that might generate various rewards
-    positions = random.uniform(key, (n_agents, 2), minval=-2, maxval=2)
+    # Create positions - some in target, some not
+    positions = jnp.array([
+        [0.0, 0.0],   # In target (at grid center)
+        [0.5, 0.0],   # In target
+        [5.0, 5.0],   # Far from target
+        [0.1, 0.1],   # Near target
+        [-5.0, -5.0], # Far from target
+    ])
     velocities = jnp.zeros((n_agents, 2))
     
-    # Create a simple grid
-    grid_centers = jnp.array([
-        [-1.0, -1.0], [0.0, -1.0], [1.0, -1.0],
-        [-1.0, 0.0], [0.0, 0.0], [1.0, 0.0],
-        [-1.0, 1.0], [0.0, 1.0], [1.0, 1.0],
-    ])
+    # Simple grid
+    grid_centers = jnp.array([[0.0, 0.0], [0.5, 0.0]])
     l_cell = 0.5
     
     # Get neighbor indices
     _, _, _, neighbor_indices = get_k_nearest_neighbors_all_agents(
-        positions, velocities, k=6, d_sen=3.0,
-        is_periodic=False, boundary_width=2.5, boundary_height=2.5
+        positions, velocities, k=4, d_sen=3.0,
+        is_periodic=False, boundary_width=5.0, boundary_height=5.0
     )
     
     # Compute rewards
     rewards, info = compute_rewards(
         positions, velocities, grid_centers, l_cell, neighbor_indices,
         reward_params,
-        is_periodic=False, boundary_width=2.5, boundary_height=2.5, d_sen=3.0
+        is_periodic=False, boundary_width=5.0, boundary_height=5.0, d_sen=3.0
     )
     
-    print(f"\nReward statistics:")
-    print(f"  Min: {float(jnp.min(rewards)):.3f}")
-    print(f"  Max: {float(jnp.max(rewards)):.3f}")
-    print(f"  Mean: {float(jnp.mean(rewards)):.3f}")
+    print(f"\nReward values: {rewards}")
+    print(f"In target: {info['in_target']}")
+    print(f"Task complete: {info['task_complete']}")
     
-    # Verify clipping
-    assert jnp.all(rewards >= reward_params.reward_clip_min), "Rewards below clip_min"
-    assert jnp.all(rewards <= reward_params.reward_clip_max), "Rewards above clip_max"
+    # Verify rewards are 0 or 1 (C++ behavior: binary rewards)
+    unique_rewards = jnp.unique(rewards)
+    print(f"Unique reward values: {unique_rewards}")
     
-    # Test with extreme params to verify clipping is applied
-    extreme_params = RewardParams(
-        reward_entering=100.0,  # Very high reward
-        penalty_collision=-100.0,  # Very high penalty
-        reward_clip_min=-10.0,
-        reward_clip_max=10.0,
-    )
+    # All rewards should be either 0.0 or reward_entering (1.0)
+    for r in rewards:
+        assert r == 0.0 or r == reward_params.reward_entering, \
+            f"Reward {r} should be 0 or {reward_params.reward_entering}"
     
-    rewards_extreme, _ = compute_rewards(
-        positions, velocities, grid_centers, l_cell, neighbor_indices,
-        extreme_params,
-        is_periodic=False, boundary_width=2.5, boundary_height=2.5, d_sen=3.0
-    )
-    
-    print(f"\nWith extreme reward params (±100):")
-    print(f"  Min (should be >= -10): {float(jnp.min(rewards_extreme)):.3f}")
-    print(f"  Max (should be <= 10): {float(jnp.max(rewards_extreme)):.3f}")
-    
-    assert jnp.all(rewards_extreme >= -10.0), "Clipping failed for min"
-    assert jnp.all(rewards_extreme <= 10.0), "Clipping failed for max"
-    
-    print("\n✓ Reward clipping test PASSED")
+    print("\n✓ Reward behavior test PASSED (no clipping, matches C++ MARL)")
     return True
 
 

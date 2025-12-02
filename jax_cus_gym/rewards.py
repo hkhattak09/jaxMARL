@@ -14,7 +14,6 @@ The reward can be:
 """
 
 from typing import Tuple
-from enum import Enum
 import jax
 import jax.numpy as jnp
 from flax import struct
@@ -22,11 +21,13 @@ from flax import struct
 from physics import compute_pairwise_distances, compute_pairwise_distances_periodic
 
 
-class RewardMode(Enum):
-    """Reward sharing mode."""
-    INDIVIDUAL = "individual"
-    SHARED_MEAN = "shared_mean"
-    SHARED_MAX = "shared_max"
+# Reward mode constants (integers for JAX tracing compatibility)
+# 0 = individual (each agent gets own reward)
+# 1 = shared_mean (all agents get mean reward)  
+# 2 = shared_max (all agents get max reward)
+REWARD_MODE_INDIVIDUAL = 0
+REWARD_MODE_SHARED_MEAN = 1
+REWARD_MODE_SHARED_MAX = 2
 
 
 @struct.dataclass
@@ -39,25 +40,20 @@ class RewardParams:
         reward_exploration: Reward for exploring unoccupied areas
         collision_threshold: Distance threshold for collision penalty
         exploration_threshold: Distance threshold for exploration reward (norm of weighted centroid)
-        cosine_decay_delta: Delta parameter for cosine decay function (default 0.5)
-        reward_mode: How to share rewards among agents
-        reward_clip_min: Minimum reward value (for clipping outliers)
-        reward_clip_max: Maximum reward value (for clipping outliers)
+        cosine_decay_delta: Delta parameter for cosine decay function (0.0 matches C++ MARL)
+        reward_mode: How to share rewards (0=individual, 1=shared_mean, 2=shared_max)
     """
     reward_entering: float = 1.0
     penalty_collision: float = 0.0  # No penalty (matches original MARL C++ code)
     reward_exploration: float = 0.1
     collision_threshold: float = 0.15  # r_avoid in original
     exploration_threshold: float = 0.05  # Matches MARL's 0.05 threshold for ||v_exp|| check
-    cosine_decay_delta: float = 0.5  # Delta for cosine decay weighting function
-    # Note: reward_mode is a string since Enum can't be in dataclass easily
-    reward_mode: str = "individual"
-    # Reward clipping to prevent outliers from destabilizing training
-    reward_clip_min: float = -10.0
-    reward_clip_max: float = 10.0
+    cosine_decay_delta: float = 0.0  # Delta for cosine decay weighting (0.0 matches C++ MARL)
+    # Use integer for JAX tracing compatibility: 0=individual, 1=shared_mean, 2=shared_max
+    reward_mode: int = REWARD_MODE_INDIVIDUAL
 
 
-def rho_cos_dec(z: jax.Array, r: float, delta: float = 0.5) -> jax.Array:
+def rho_cos_dec(z: jax.Array, r: float, delta: float = 0.0) -> jax.Array:
     """Cosine decay weighting function (matches C++ _rho_cos_dec).
     
     This function provides smooth distance-based weighting:
@@ -175,7 +171,7 @@ def compute_exploration_reward(
     collision_threshold: float,
     exploration_threshold: float,
     d_sen: float,
-    cosine_decay_delta: float = 0.5,
+    cosine_decay_delta: float = 0.0,
 ) -> jax.Array:
     """Compute exploration/uniformity reward for each agent.
     
@@ -307,17 +303,22 @@ def compute_rewards(
         rewards
     )
     
-    # 5. Apply reward clipping (before sharing to ensure consistent scale)
-    rewards = jnp.clip(rewards, reward_params.reward_clip_min, reward_params.reward_clip_max)
+    # Note: No reward clipping (matches C++ MARL which outputs rewards as 0 or 1 directly)
     
-    # 6. Apply reward sharing mode
-    if reward_params.reward_mode == "shared_mean":
-        mean_reward = jnp.mean(rewards)
-        rewards = jnp.full(n_agents, mean_reward)
-    elif reward_params.reward_mode == "shared_max":
-        max_reward = jnp.max(rewards)
-        rewards = jnp.full(n_agents, max_reward)
-    # else: individual (default), no change
+    # 5. Apply reward sharing mode (using jnp.where for JIT compatibility)
+    mean_reward = jnp.mean(rewards)
+    max_reward = jnp.max(rewards)
+    
+    # Use nested where for JIT-compatible branching
+    rewards = jnp.where(
+        reward_params.reward_mode == REWARD_MODE_SHARED_MEAN,
+        jnp.full(n_agents, mean_reward),
+        jnp.where(
+            reward_params.reward_mode == REWARD_MODE_SHARED_MAX,
+            jnp.full(n_agents, max_reward),
+            rewards  # individual mode
+        )
+    )
     
     # Info dict
     info = {

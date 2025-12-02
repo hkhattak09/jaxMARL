@@ -212,7 +212,7 @@ def test_reward_sharing_mean():
         reward_entering=1.0,
         penalty_collision=0.0,
         collision_threshold=0.1,
-        reward_mode="shared_mean",
+        reward_mode=1,  # REWARD_MODE_SHARED_MEAN
     )
     
     rewards, _ = compute_rewards(
@@ -244,7 +244,7 @@ def test_reward_sharing_max():
         reward_entering=1.0,
         penalty_collision=0.0,
         collision_threshold=0.1,
-        reward_mode="shared_max",
+        reward_mode=2,  # REWARD_MODE_SHARED_MAX
     )
     
     rewards, _ = compute_rewards(
@@ -551,7 +551,7 @@ def test_exploration_reward_asymmetric_grids():
     reward = compute_exploration_reward(
         positions, grid_centers, in_target, neighbor_indices,
         collision_threshold=0.15, exploration_threshold=0.05,
-        d_sen=3.0, cosine_decay_delta=0.5
+        d_sen=3.0, cosine_decay_delta=0.0  # Matches C++ MARL
     )
     
     # Agent is not centered (grids all to the right)
@@ -580,7 +580,7 @@ def test_exploration_reward_not_in_target():
     reward = compute_exploration_reward(
         positions, grid_centers, in_target, neighbor_indices,
         collision_threshold=0.15, exploration_threshold=0.05,
-        d_sen=3.0, cosine_decay_delta=0.5
+        d_sen=3.0, cosine_decay_delta=0.0  # Matches C++ MARL
     )
     
     # Even though centered, not in target -> no reward
@@ -611,7 +611,7 @@ def test_exploration_reward_multiple_agents():
     rewards = compute_exploration_reward(
         positions, grid_centers, in_target, neighbor_indices,
         collision_threshold=0.15, exploration_threshold=0.05,
-        d_sen=3.0, cosine_decay_delta=0.5
+        d_sen=3.0, cosine_decay_delta=0.0  # Matches C++ MARL
     )
     
     assert rewards.shape == (3,)

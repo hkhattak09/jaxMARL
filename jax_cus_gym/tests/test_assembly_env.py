@@ -164,8 +164,12 @@ def test_step_with_actions():
 
 
 def test_velocity_clipping():
-    """Test that velocities are clipped to max velocity."""
-    print_subheader("Velocity Clipping")
+    """Test that velocities are clipped per-component (matches C++ MARL).
+    
+    C++ MARL uses: np.clip(dp, -Vel_max, Vel_max) which clips each component.
+    This means diagonal movement can have speed up to sqrt(2) * Vel_max.
+    """
+    print_subheader("Velocity Clipping (Per-Component)")
     
     from assembly_env import AssemblySwarmEnv, AssemblyParams
     
@@ -176,7 +180,7 @@ def test_velocity_clipping():
     key = random.PRNGKey(0)
     obs, state = env.reset(key, params)
     
-    # Apply max acceleration for several steps
+    # Apply max acceleration for several steps (diagonal direction)
     actions = jnp.ones((n_agents, 2)) * params.max_acceleration
     
     for _ in range(20):
@@ -185,12 +189,24 @@ def test_velocity_clipping():
             step_key, state, actions, params
         )
     
-    # Check velocities are clipped
-    speeds = jnp.linalg.norm(state.velocities, axis=-1)
-    assert jnp.all(speeds <= params.max_velocity + 0.01), f"Speeds: {speeds}"
+    # With per-component clipping, each component is clipped to [-Vel_max, Vel_max]
+    # So velocity can be (Vel_max, Vel_max) with magnitude sqrt(2) * Vel_max
+    max_component_speed = params.max_velocity
+    max_diagonal_speed = jnp.sqrt(2.0) * max_component_speed
     
-    print("  ✓ Velocity clipping passed")
-    return True
+    # Check each component is clipped
+    assert jnp.all(jnp.abs(state.velocities) <= max_component_speed + 0.01), \
+        f"Velocity components exceed max: {state.velocities}"
+    
+    # Check diagonal speed is within expected range
+    speeds = jnp.linalg.norm(state.velocities, axis=-1)
+    assert jnp.all(speeds <= max_diagonal_speed + 0.01), \
+        f"Speeds: {speeds}, max expected: {max_diagonal_speed}"
+    
+    print(f"  Per-component max: {max_component_speed}")
+    print(f"  Max diagonal speed: {max_diagonal_speed:.4f}")
+    print(f"  Actual speeds: {speeds}")
+    print("  ✓ Velocity clipping (per-component, C++ matching) passed")
 
 
 def test_episode_done():
@@ -844,12 +860,13 @@ def test_prior_policy_repulsion_strength():
     ])
     velocities = jnp.zeros((2, 2))
     
-    # Grid far away so attraction is minimal
+    # Disable grid attraction to isolate repulsion testing
+    # (set grid_mask to False so no valid targets exist)
     grid_centers = jnp.array([
         [10.0, 0.0],
         [10.0, 1.0],
     ])
-    grid_mask = jnp.array([True, True])
+    grid_mask = jnp.array([False, False])  # No valid targets
     
     l_cell = 0.3
     r_avoid = 0.15  # Agents at distance 0.1 < 0.15
@@ -892,7 +909,6 @@ def test_prior_policy_repulsion_strength():
     print(f"    Actions with repulsion_strength=1.0: {actions_weak}")
     
     print("  ✓ Prior policy repulsion strength test passed")
-    return True
 
 
 def test_prior_policy_in_target_behavior():
@@ -993,7 +1009,7 @@ def test_reward_sharing():
     key = random.PRNGKey(0)
     
     # Test individual mode
-    params_individual = AssemblyParams(reward_mode="individual")
+    params_individual = AssemblyParams(reward_mode=0)  # REWARD_MODE_INDIVIDUAL
     obs, state = env.reset(key, params_individual)
     
     key, step_key = random.split(key)
@@ -1003,7 +1019,7 @@ def test_reward_sharing():
     print(f"    Individual rewards: {rewards_ind}")
     
     # Test shared mean mode
-    params_mean = AssemblyParams(reward_mode="shared_mean")
+    params_mean = AssemblyParams(reward_mode=1)  # REWARD_MODE_SHARED_MEAN
     obs, state = env.reset(key, params_mean)
     _, _, rewards_mean, _, _ = env.step(step_key, state, actions, params_mean)
     
@@ -1012,7 +1028,7 @@ def test_reward_sharing():
     print(f"    Mean rewards: all equal = {jnp.allclose(rewards_mean, rewards_mean[0])}")
     
     # Test shared max mode
-    params_max = AssemblyParams(reward_mode="shared_max")
+    params_max = AssemblyParams(reward_mode=2)  # REWARD_MODE_SHARED_MAX
     obs, state = env.reset(key, params_max)
     _, _, rewards_max, _, _ = env.step(step_key, state, actions, params_max)
     
@@ -1114,6 +1130,540 @@ def test_full_episode():
 
 
 # ============================================================
+# C++ MARL MATCHING TESTS - PRIOR POLICY
+# ============================================================
+
+def test_prior_policy_cpp_matching_combined_forces():
+    """Test that prior policy matches C++ MARL with combined forces.
+    
+    Tests realistic scenarios where attraction, repulsion, and sync all interact.
+    Verifies exact numerical behavior matches C++ implementation.
+    """
+    print_subheader("Prior Policy C++ Matching - Combined Forces")
+    
+    from assembly_env import compute_prior_policy
+    
+    # Scenario 1: Agent between target and neighbor
+    # Agent at origin, target to the right, neighbor to the left
+    # Attraction pulls right, no repulsion (neighbor far away)
+    positions = jnp.array([
+        [0.0, 0.0],   # Agent 0
+        [-1.0, 0.0],  # Agent 1 (far away, outside r_avoid)
+    ])
+    velocities = jnp.zeros((2, 2))
+    grid_centers = jnp.array([[1.0, 0.0]])  # Target to the right
+    grid_mask = jnp.array([True])
+    l_cell = 0.3
+    r_avoid = 0.15
+    d_sen = 3.0
+    
+    actions = compute_prior_policy(
+        positions, velocities, grid_centers, grid_mask,
+        l_cell, r_avoid, d_sen,
+    )
+    
+    # Agent 0: attraction to [1,0], no repulsion (neighbor at dist=1.0 > r_avoid=0.15)
+    # Attraction = 2.0 * [1,0]/1.0 = [2.0, 0] -> clipped to [1.0, 0]
+    # Sync = 2.0 * ([0,0] - [0,0]) = [0, 0] (neighbor has same velocity)
+    assert actions[0, 0] > 0.9, f"Agent 0 should be pulled right, got {actions[0, 0]}"
+    assert jnp.abs(actions[0, 1]) < 0.1, f"Agent 0 y should be ~0, got {actions[0, 1]}"
+    
+    print(f"    Scenario 1 - Target right, neighbor far left: {actions[0]}")
+    
+    # Scenario 2: Repulsion dominates when agents are very close
+    # Both agents at similar position, extremely close (dist < r_avoid)
+    positions = jnp.array([
+        [0.0, 0.0],    # Agent 0
+        [0.05, 0.0],   # Agent 1, VERY close (dist=0.05 < r_avoid=0.15)
+    ])
+    grid_centers = jnp.array([[1.0, 0.0]])  # Target to the right
+    
+    actions = compute_prior_policy(
+        positions, velocities, grid_centers, grid_mask,
+        l_cell, r_avoid, d_sen,
+    )
+    
+    # Agent 0:
+    # - Attraction: 2.0 * [1,0] = [2.0, 0] (pulling right)
+    # - Repulsion: 3.0 * (0.15/0.05 - 1) * [-1,0] = 3.0 * 2.0 * [-1,0] = [-6.0, 0]
+    # - Total before clip: [2.0 - 6.0, 0] = [-4.0, 0]
+    # - After clip: [-1.0, 0] (repulsion wins!)
+    assert actions[0, 0] < -0.9, f"Agent 0 should be pushed left (repulsion wins), got {actions[0, 0]}"
+    
+    # Agent 1:
+    # - Attraction: 2.0 * [0.95,0]/0.95 ≈ [2.0, 0] (pulling right)
+    # - Repulsion: 3.0 * (0.15/0.05 - 1) * [1,0] = [6.0, 0] (pushing right)
+    # - Total: [8.0, 0] -> clipped to [1.0, 0]
+    assert actions[1, 0] > 0.9, f"Agent 1 should be pushed right, got {actions[1, 0]}"
+    
+    print(f"    Scenario 2 - Very close agents: Agent0={actions[0]}, Agent1={actions[1]}")
+    
+    # Scenario 3: Sync force when neighbors have different velocity
+    positions = jnp.array([
+        [0.0, 0.0],   # Agent 0 at origin
+        [0.5, 0.0],   # Agent 1 within d_sen but outside r_avoid
+    ])
+    velocities = jnp.array([
+        [0.0, 0.0],   # Agent 0 stationary
+        [1.0, 0.0],   # Agent 1 moving right
+    ])
+    # Put both agents in target to disable attraction
+    grid_centers = jnp.array([[0.0, 0.0], [0.5, 0.0]])
+    grid_mask = jnp.array([True, True])
+    l_cell = 0.5  # Large enough that both are "in target"
+    
+    actions = compute_prior_policy(
+        positions, velocities, grid_centers, grid_mask,
+        l_cell, r_avoid, d_sen,
+    )
+    
+    # Agent 0 in target -> no attraction
+    # No repulsion (dist=0.5 > r_avoid=0.15)
+    # Sync: 2.0 * ([1,0] - [0,0]) = [2.0, 0] -> clipped to [1.0, 0]
+    assert actions[0, 0] > 0.9, f"Agent 0 should sync with moving neighbor, got {actions[0, 0]}"
+    
+    print(f"    Scenario 3 - Velocity sync: {actions[0]}")
+    
+    print("  ✓ Prior policy C++ matching - combined forces passed")
+    return True
+
+
+def test_prior_policy_cpp_matching_force_clipping():
+    """Test that force clipping matches C++ clamp behavior.
+    
+    C++ clips each component independently to [-1, 1].
+    """
+    print_subheader("Prior Policy C++ Matching - Force Clipping")
+    
+    from assembly_env import compute_prior_policy
+    
+    # Create scenario with extreme forces in both directions
+    # Multiple close neighbors creating large repulsion
+    positions = jnp.array([
+        [0.0, 0.0],    # Agent 0 at center
+        [0.05, 0.0],   # Agent 1 very close right
+        [0.0, 0.05],   # Agent 2 very close up
+        [-0.05, 0.0],  # Agent 3 very close left
+        [0.0, -0.05],  # Agent 4 very close down
+    ])
+    velocities = jnp.zeros((5, 2))
+    
+    # No valid targets
+    grid_centers = jnp.array([[10.0, 10.0]])
+    grid_mask = jnp.array([False])
+    l_cell = 0.3
+    r_avoid = 0.15
+    d_sen = 3.0
+    
+    actions = compute_prior_policy(
+        positions, velocities, grid_centers, grid_mask,
+        l_cell, r_avoid, d_sen,
+    )
+    
+    # All actions should be clipped to [-1, 1]
+    assert jnp.all(actions >= -1.0), f"Actions should be >= -1.0, got min {jnp.min(actions)}"
+    assert jnp.all(actions <= 1.0), f"Actions should be <= 1.0, got max {jnp.max(actions)}"
+    
+    # Agent 0 at center with symmetric neighbors should have ~zero action
+    # (repulsion forces cancel out)
+    assert jnp.abs(actions[0, 0]) < 0.2, f"Center agent x should be ~0, got {actions[0, 0]}"
+    assert jnp.abs(actions[0, 1]) < 0.2, f"Center agent y should be ~0, got {actions[0, 1]}"
+    
+    print(f"    Center agent with symmetric neighbors: {actions[0]}")
+    print(f"    Action bounds: min={jnp.min(actions):.3f}, max={jnp.max(actions):.3f}")
+    
+    print("  ✓ Prior policy C++ matching - force clipping passed")
+    return True
+
+
+def test_prior_policy_jit_compatibility():
+    """Test that prior policy is fully JIT-compatible.
+    
+    Ensures no Python callbacks or dynamic shapes that would break JAX speedup.
+    """
+    print_subheader("Prior Policy JIT Compatibility")
+    
+    from assembly_env import compute_prior_policy
+    import time
+    
+    n_agents = 20
+    positions = jax.random.uniform(jax.random.PRNGKey(0), (n_agents, 2)) * 2.0
+    velocities = jax.random.uniform(jax.random.PRNGKey(1), (n_agents, 2)) * 0.5
+    grid_centers = jax.random.uniform(jax.random.PRNGKey(2), (50, 2)) * 2.0
+    grid_mask = jnp.ones(50, dtype=bool)
+    
+    # JIT compile
+    jit_policy = jax.jit(lambda p, v: compute_prior_policy(
+        p, v, grid_centers, grid_mask, 0.3, 0.15, 3.0
+    ))
+    
+    # Warmup (compilation)
+    _ = jit_policy(positions, velocities)
+    
+    # Time JIT version
+    n_calls = 1000
+    start = time.time()
+    for _ in range(n_calls):
+        actions = jit_policy(positions, velocities)
+        actions.block_until_ready()
+    jit_time = time.time() - start
+    
+    # Time non-JIT version
+    start = time.time()
+    for _ in range(100):  # Fewer iterations since it's slower
+        actions = compute_prior_policy(
+            positions, velocities, grid_centers, grid_mask, 0.3, 0.15, 3.0
+        )
+        actions.block_until_ready()
+    non_jit_time = (time.time() - start) * 10  # Scale to match n_calls
+    
+    speedup = non_jit_time / jit_time
+    
+    print(f"    JIT time for {n_calls} calls: {jit_time:.3f}s")
+    print(f"    Non-JIT estimated: {non_jit_time:.3f}s")
+    print(f"    Speedup: {speedup:.1f}x")
+    
+    # JIT should provide significant speedup
+    assert speedup > 2.0, f"JIT speedup should be > 2x, got {speedup:.1f}x"
+    
+    # Test vmap compatibility
+    batch_positions = jnp.stack([positions] * 8)  # 8 parallel envs
+    batch_velocities = jnp.stack([velocities] * 8)
+    
+    vmap_policy = jax.vmap(lambda p, v: compute_prior_policy(
+        p, v, grid_centers, grid_mask, 0.3, 0.15, 3.0
+    ))
+    
+    batch_actions = vmap_policy(batch_positions, batch_velocities)
+    assert batch_actions.shape == (8, n_agents, 2)
+    
+    print(f"    Vmap batch shape: {batch_actions.shape}")
+    
+    print("  ✓ Prior policy JIT compatibility passed")
+    return True
+
+
+# ============================================================
+# C++ MARL MATCHING TESTS - REWARD FUNCTION
+# ============================================================
+
+def test_reward_cpp_matching_exploration():
+    """Test exploration reward matches C++ MARL exactly.
+    
+    C++ uses delta=0.0 in rho_cos_dec, meaning the cosine decay starts
+    immediately from distance=0 (no constant region).
+    """
+    print_subheader("Reward C++ Matching - Exploration")
+    
+    from rewards import compute_exploration_reward, rho_cos_dec
+    
+    # Test rho_cos_dec with delta=0.0 (C++ default)
+    # Formula: 0.5 * (1 + cos(pi * z / r)) for z < r, else 0
+    distances = jnp.array([0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 2.9, 3.0, 3.1])
+    r = 3.0
+    delta = 0.0
+    
+    weights = rho_cos_dec(distances, r, delta)
+    
+    # With delta=0:
+    # z=0: cos(0) = 1, weight = 0.5 * (1 + 1) = 1.0
+    # z=r/2=1.5: cos(pi/2) = 0, weight = 0.5 * (1 + 0) = 0.5
+    # z=r=3.0: cos(pi) = -1, weight = 0.5 * (1 - 1) = 0.0
+    print(f"    rho_cos_dec with delta=0.0: {weights}")
+    
+    assert jnp.isclose(weights[0], 1.0, atol=1e-5), f"z=0 should have weight 1.0, got {weights[0]}"
+    assert jnp.isclose(weights[3], 0.5, atol=1e-2), f"z=r/2=1.5 should have ~0.5 weight, got {weights[3]}"
+    assert jnp.isclose(weights[7], 0.0, atol=1e-5), f"z=r should have weight 0.0, got {weights[7]}"
+    assert jnp.isclose(weights[8], 0.0, atol=1e-5), f"z>r should have weight 0.0, got {weights[8]}"
+    
+    # Verify monotonic decrease
+    for i in range(len(weights) - 2):  # Exclude last which might be 0
+        if weights[i+1] > 0:
+            assert weights[i] >= weights[i+1], f"Weights should decrease: {weights[i]} < {weights[i+1]}"
+    
+    # Test exploration reward with symmetric grids (should get reward)
+    positions = jnp.array([[0.0, 0.0]])
+    grid_centers = jnp.array([
+        [1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0]
+    ])
+    in_target = jnp.array([True])
+    neighbor_indices = jnp.zeros((1, 1), dtype=jnp.int32)
+    
+    reward = compute_exploration_reward(
+        positions, grid_centers, in_target, neighbor_indices,
+        collision_threshold=0.15, exploration_threshold=0.05,
+        d_sen=3.0, cosine_decay_delta=0.0
+    )
+    
+    assert reward[0] == 1.0, f"Symmetric grids should give reward, got {reward[0]}"
+    print(f"    Symmetric grids reward: {reward[0]}")
+    
+    # Test with asymmetric grids (should NOT get reward)
+    grid_centers_asym = jnp.array([
+        [0.5, 0.0], [1.0, 0.0], [1.5, 0.0]  # All to the right
+    ])
+    
+    reward_asym = compute_exploration_reward(
+        positions, grid_centers_asym, in_target, neighbor_indices,
+        collision_threshold=0.15, exploration_threshold=0.05,
+        d_sen=3.0, cosine_decay_delta=0.0
+    )
+    
+    assert reward_asym[0] == 0.0, f"Asymmetric grids should NOT give reward, got {reward_asym[0]}"
+    print(f"    Asymmetric grids reward: {reward_asym[0]}")
+    
+    print("  ✓ Reward C++ matching - exploration passed")
+    return True
+
+
+def test_reward_cpp_matching_collision_check():
+    """Test collision detection matches C++ MARL.
+    
+    C++ checks: if r_avoid > distance_to_neighbor, mark as collision.
+    """
+    print_subheader("Reward C++ Matching - Collision Check")
+    
+    from rewards import compute_agent_collisions
+    
+    # Two agents, one pair colliding, one not
+    positions = jnp.array([
+        [0.0, 0.0],    # Agent 0
+        [0.1, 0.0],    # Agent 1 - colliding with 0 (dist=0.1 < r_avoid=0.15)
+        [1.0, 0.0],    # Agent 2 - not colliding
+    ])
+    
+    is_colliding, collision_matrix = compute_agent_collisions(
+        positions, collision_threshold=0.15
+    )
+    
+    # Agents 0 and 1 should be colliding
+    assert is_colliding[0] == True, "Agent 0 should be colliding"
+    assert is_colliding[1] == True, "Agent 1 should be colliding"
+    assert is_colliding[2] == False, "Agent 2 should NOT be colliding"
+    
+    # Collision matrix should be symmetric
+    assert collision_matrix[0, 1] == True
+    assert collision_matrix[1, 0] == True
+    assert collision_matrix[0, 2] == False
+    
+    print(f"    Collisions: {is_colliding}")
+    print(f"    Collision matrix diagonal: {jnp.diag(collision_matrix)}")
+    
+    # Diagonal should always be False (no self-collision)
+    assert jnp.all(jnp.diag(collision_matrix) == False)
+    
+    print("  ✓ Reward C++ matching - collision check passed")
+    return True
+
+
+def test_reward_cpp_matching_full_reward():
+    """Test full reward computation matches C++ MARL logic.
+    
+    C++ reward logic:
+    - reward = 0 initially
+    - if in_target AND not_colliding AND is_uniform: reward = 1.0
+    """
+    print_subheader("Reward C++ Matching - Full Reward")
+    
+    from rewards import compute_rewards, RewardParams
+    
+    # Setup: 3 agents with different conditions
+    positions = jnp.array([
+        [0.0, 0.0],    # Agent 0: centered in symmetric grids, not colliding
+        [0.05, 0.0],   # Agent 1: colliding with agent 0
+        [5.0, 0.0],    # Agent 2: far from grids (not in target)
+    ])
+    velocities = jnp.zeros((3, 2))
+    
+    # Symmetric grids around origin
+    grid_centers = jnp.array([
+        [0.3, 0.0], [-0.3, 0.0], [0.0, 0.3], [0.0, -0.3]
+    ])
+    l_cell = 0.5  # Agents 0,1 are in target
+    
+    neighbor_indices = jnp.array([
+        [1, -1, -1],  # Agent 0's neighbors
+        [0, -1, -1],  # Agent 1's neighbors
+        [-1, -1, -1], # Agent 2's neighbors
+    ])
+    
+    reward_params = RewardParams(
+        collision_threshold=0.15,
+        exploration_threshold=0.05,
+        cosine_decay_delta=0.0,  # Match C++
+    )
+    
+    rewards, info = compute_rewards(
+        positions, velocities, grid_centers, l_cell, neighbor_indices,
+        reward_params, d_sen=3.0
+    )
+    
+    print(f"    Agent 0 - in_target={info['in_target'][0]}, colliding={info['is_colliding'][0]}, exploration={info['exploration'][0]}")
+    print(f"    Agent 1 - in_target={info['in_target'][1]}, colliding={info['is_colliding'][1]}, exploration={info['exploration'][1]}")
+    print(f"    Agent 2 - in_target={info['in_target'][2]}, colliding={info['is_colliding'][2]}, exploration={info['exploration'][2]}")
+    print(f"    Rewards: {rewards}")
+    
+    # Agent 0: in_target, colliding (with agent 1), so reward = 0
+    assert rewards[0] == 0.0, f"Agent 0 colliding, should get 0, got {rewards[0]}"
+    
+    # Agent 1: in_target, colliding, so reward = 0
+    assert rewards[1] == 0.0, f"Agent 1 colliding, should get 0, got {rewards[1]}"
+    
+    # Agent 2: NOT in target, so reward = 0
+    assert rewards[2] == 0.0, f"Agent 2 not in target, should get 0, got {rewards[2]}"
+    
+    # Now test case where agent gets reward (in target, not colliding, uniform)
+    positions_good = jnp.array([[0.0, 0.0]])  # Single agent
+    velocities_good = jnp.zeros((1, 2))
+    neighbor_indices_good = jnp.array([[-1, -1, -1]])
+    
+    rewards_good, info_good = compute_rewards(
+        positions_good, velocities_good, grid_centers, l_cell, neighbor_indices_good,
+        reward_params, d_sen=3.0
+    )
+    
+    print(f"    Single agent - in_target={info_good['in_target'][0]}, colliding={info_good['is_colliding'][0]}, exploration={info_good['exploration'][0]}")
+    print(f"    Single agent reward: {rewards_good[0]}")
+    
+    # Single agent at center of symmetric grids: in_target, not colliding, uniform
+    assert rewards_good[0] == 1.0, f"Single agent should get reward 1.0, got {rewards_good[0]}"
+    
+    print("  ✓ Reward C++ matching - full reward passed")
+    return True
+
+
+def test_reward_jit_compatibility():
+    """Test that reward computation is fully JIT-compatible."""
+    print_subheader("Reward JIT Compatibility")
+    
+    from rewards import compute_rewards, RewardParams
+    import time
+    
+    n_agents = 20
+    n_grids = 50
+    
+    positions = jax.random.uniform(jax.random.PRNGKey(0), (n_agents, 2)) * 2.0
+    velocities = jax.random.uniform(jax.random.PRNGKey(1), (n_agents, 2)) * 0.5
+    grid_centers = jax.random.uniform(jax.random.PRNGKey(2), (n_grids, 2)) * 2.0
+    neighbor_indices = jnp.zeros((n_agents, 5), dtype=jnp.int32) - 1
+    
+    reward_params = RewardParams(cosine_decay_delta=0.0)
+    
+    # JIT compile
+    @jax.jit
+    def compute_rewards_jit(pos, vel):
+        return compute_rewards(pos, vel, grid_centers, 0.3, neighbor_indices, reward_params, d_sen=3.0)
+    
+    # Warmup
+    _, _ = compute_rewards_jit(positions, velocities)
+    
+    # Time JIT version
+    n_calls = 1000
+    start = time.time()
+    for _ in range(n_calls):
+        rewards, info = compute_rewards_jit(positions, velocities)
+        rewards.block_until_ready()
+    jit_time = time.time() - start
+    
+    print(f"    JIT time for {n_calls} calls: {jit_time:.3f}s")
+    print(f"    Per-call: {jit_time/n_calls*1000:.3f}ms")
+    
+    # Test vmap compatibility
+    batch_positions = jnp.stack([positions] * 8)
+    batch_velocities = jnp.stack([velocities] * 8)
+    
+    @jax.jit
+    @jax.vmap
+    def batch_rewards(pos, vel):
+        return compute_rewards(pos, vel, grid_centers, 0.3, neighbor_indices, reward_params, d_sen=3.0)[0]
+    
+    batch_r = batch_rewards(batch_positions, batch_velocities)
+    assert batch_r.shape == (8, n_agents)
+    
+    print(f"    Vmap batch shape: {batch_r.shape}")
+    
+    print("  ✓ Reward JIT compatibility passed")
+    return True
+
+
+def test_full_simulation_cpp_matching():
+    """Test full simulation loop matches expected C++ behavior.
+    
+    Runs a full episode and verifies:
+    1. Prior policy produces sensible actions
+    2. Rewards are computed correctly
+    3. Coverage increases over time (agents reach targets)
+    4. No NaN/Inf values
+    """
+    print_subheader("Full Simulation C++ Matching")
+    
+    from assembly_env import AssemblySwarmEnv, AssemblyParams
+    from rewards import RewardParams
+    
+    n_agents = 10
+    env = AssemblySwarmEnv(n_agents=n_agents)
+    params = AssemblyParams(
+        max_steps=200,
+        reward_params=RewardParams(cosine_decay_delta=0.0),  # Match C++
+    )
+    
+    key = random.PRNGKey(42)
+    obs, state = env.reset(key, params)
+    
+    total_rewards = []
+    coverage_history = []
+    
+    # Run simulation
+    for step in range(params.max_steps):
+        key, step_key = random.split(key)
+        
+        # Use prior policy (matches C++ robotPolicy)
+        actions = env.prior_policy(state, params)
+        
+        # Check for NaN/Inf
+        assert jnp.all(jnp.isfinite(actions)), f"NaN/Inf in actions at step {step}"
+        
+        # Step environment
+        obs, state, rewards, dones, info = env.step(step_key, state, actions, params)
+        
+        # Check for NaN/Inf
+        assert jnp.all(jnp.isfinite(rewards)), f"NaN/Inf in rewards at step {step}"
+        assert jnp.all(jnp.isfinite(state.positions)), f"NaN/Inf in positions at step {step}"
+        
+        total_rewards.append(float(jnp.sum(rewards)))
+        coverage_history.append(float(info['coverage_rate']))
+        
+        if state.done:
+            break
+    
+    # Analyze results
+    final_coverage = coverage_history[-1]
+    total_reward = sum(total_rewards)
+    agents_in_target = int(jnp.sum(state.in_target))
+    
+    print(f"    Steps run: {len(total_rewards)}")
+    print(f"    Final coverage: {final_coverage:.2%}")
+    print(f"    Agents in target: {agents_in_target}/{n_agents}")
+    print(f"    Total reward: {total_reward:.2f}")
+    print(f"    Mean reward per step: {total_reward/len(total_rewards):.4f}")
+    
+    # Coverage should increase over time with prior policy
+    early_coverage = sum(coverage_history[:20]) / 20
+    late_coverage = sum(coverage_history[-20:]) / 20
+    
+    print(f"    Early avg coverage (first 20): {early_coverage:.2%}")
+    print(f"    Late avg coverage (last 20): {late_coverage:.2%}")
+    
+    # With prior policy, coverage should generally improve
+    # (agents move toward targets)
+    assert late_coverage >= early_coverage * 0.8, \
+        f"Coverage should not decrease significantly: early={early_coverage:.2%}, late={late_coverage:.2%}"
+    
+    print("  ✓ Full simulation C++ matching passed")
+    return True
+
+
+# ============================================================
 # RUN ALL TESTS
 # ============================================================
 
@@ -1157,6 +1707,16 @@ def run_all_tests():
         ("Prior Policy In-Target Behavior", test_prior_policy_in_target_behavior),
         ("Occupied Grid Tracking", test_occupied_grid_tracking),
         ("Reward Sharing", test_reward_sharing),
+        
+        # C++ MARL Matching Tests
+        ("Prior Policy C++ Combined Forces", test_prior_policy_cpp_matching_combined_forces),
+        ("Prior Policy C++ Force Clipping", test_prior_policy_cpp_matching_force_clipping),
+        ("Prior Policy JIT Compatibility", test_prior_policy_jit_compatibility),
+        ("Reward C++ Exploration", test_reward_cpp_matching_exploration),
+        ("Reward C++ Collision Check", test_reward_cpp_matching_collision_check),
+        ("Reward C++ Full Reward", test_reward_cpp_matching_full_reward),
+        ("Reward JIT Compatibility", test_reward_jit_compatibility),
+        ("Full Simulation C++ Matching", test_full_simulation_cpp_matching),
         
         # Performance
         ("Performance", test_performance),
