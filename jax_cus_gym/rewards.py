@@ -38,7 +38,8 @@ class RewardParams:
         penalty_collision: Penalty for colliding with another agent (0.0 = no penalty, matches MARL)
         reward_exploration: Reward for exploring unoccupied areas
         collision_threshold: Distance threshold for collision penalty
-        exploration_threshold: Distance threshold for exploration reward
+        exploration_threshold: Distance threshold for exploration reward (norm of weighted centroid)
+        cosine_decay_delta: Delta parameter for cosine decay function (default 0.5)
         reward_mode: How to share rewards among agents
         reward_clip_min: Minimum reward value (for clipping outliers)
         reward_clip_max: Maximum reward value (for clipping outliers)
@@ -47,12 +48,50 @@ class RewardParams:
     penalty_collision: float = 0.0  # No penalty (matches original MARL C++ code)
     reward_exploration: float = 0.1
     collision_threshold: float = 0.15  # r_avoid in original
-    exploration_threshold: float = 0.05  # Matches MARL's 0.05 threshold
+    exploration_threshold: float = 0.05  # Matches MARL's 0.05 threshold for ||v_exp|| check
+    cosine_decay_delta: float = 0.5  # Delta for cosine decay weighting function
     # Note: reward_mode is a string since Enum can't be in dataclass easily
     reward_mode: str = "individual"
     # Reward clipping to prevent outliers from destabilizing training
     reward_clip_min: float = -10.0
     reward_clip_max: float = 10.0
+
+
+def rho_cos_dec(z: jax.Array, r: float, delta: float = 0.5) -> jax.Array:
+    """Cosine decay weighting function (matches C++ _rho_cos_dec).
+    
+    This function provides smooth distance-based weighting:
+    - Returns 1.0 when z < delta * r (close range)
+    - Smoothly decays via cosine when delta * r <= z < r
+    - Returns 0.0 when z >= r (far away)
+    
+    Args:
+        z: Distance values, any shape
+        r: Maximum range (e.g., d_sen)
+        delta: Transition point as fraction of r (default 0.5)
+        
+    Returns:
+        Weights in [0, 1], same shape as z
+    """
+    # Normalize distance by r
+    z_normalized = z / r
+    
+    # Compute cosine decay for transition zone
+    # cos_arg = pi * (z/r - delta) / (1 - delta)
+    cos_arg = jnp.pi * (z_normalized - delta) / (1.0 - delta)
+    cos_decay = 0.5 * (1.0 + jnp.cos(cos_arg))
+    
+    # Apply conditions:
+    # z < delta * r -> 1.0
+    # delta * r <= z < r -> cos_decay  
+    # z >= r -> 0.0
+    result = jnp.where(
+        z < delta * r,
+        1.0,
+        jnp.where(z < r, cos_decay, 0.0)
+    )
+    
+    return result
 
 
 def compute_in_target(
@@ -136,74 +175,65 @@ def compute_exploration_reward(
     collision_threshold: float,
     exploration_threshold: float,
     d_sen: float,
+    cosine_decay_delta: float = 0.5,
 ) -> jax.Array:
-    """Compute exploration reward for each agent.
+    """Compute exploration/uniformity reward for each agent.
+    
+    Matches the C++ MARL implementation:
+    - For each agent, compute relative positions to sensed grid cells
+    - Weight each relative position by cosine-decay function based on distance
+    - Compute weighted centroid of relative positions: v_exp = Σ(ψ × rel_pos) / Σ(ψ)
+    - Agent is "uniform" if ||v_exp|| < exploration_threshold (default 0.05)
     
     An agent gets exploration reward if:
-    1. It is in the target region
-    2. It is not colliding
-    3. It is near the centroid of unoccupied grid cells
+    1. It is in the target region  
+    2. The weighted centroid of relative positions to sensed grids has small norm
+       (meaning the agent is well-centered among sensed grid cells)
     
     Args:
         positions: Agent positions, shape (n_agents, 2)
         grid_centers: Target grid cell centers, shape (n_grid, 2)
         in_target: Whether each agent is in target, shape (n_agents,)
-        neighbor_indices: Neighbor indices, shape (n_agents, k)
-        collision_threshold: Distance for collision
-        exploration_threshold: Distance to centroid for exploration reward
-        d_sen: Sensing range
+        neighbor_indices: Neighbor indices, shape (n_agents, k) - unused but kept for API
+        collision_threshold: Distance for collision - unused in exploration
+        exploration_threshold: Threshold for ||v_exp|| check (default 0.05)
+        d_sen: Sensing range for grid cells
+        cosine_decay_delta: Delta parameter for cosine decay weighting
         
     Returns:
-        exploration_reward: Shape (n_agents,), 1.0 if exploring, 0.0 otherwise
+        exploration_reward: Shape (n_agents,), 1.0 if uniform, 0.0 otherwise
     """
-    n_agents = positions.shape[0]
-    n_grid = grid_centers.shape[0]
+    # Compute relative positions from each agent to each grid cell
+    # rel_pos[i, j] = grid_centers[j] - positions[i]
+    rel_pos = grid_centers[None, :, :] - positions[:, None, :]  # (n_agents, n_grid, 2)
     
-    # For each agent, find unoccupied grid cells within sensing range
-    # A grid cell is "occupied" if any agent (including nearby agents) is close to it
+    # Compute distances from each agent to each grid cell
+    distances = jnp.linalg.norm(rel_pos, axis=-1)  # (n_agents, n_grid)
     
-    # Distance from each agent to each grid cell
-    agent_to_grid = grid_centers[None, :, :] - positions[:, None, :]  # (n_agents, n_grid, 2)
-    agent_to_grid_dist = jnp.linalg.norm(agent_to_grid, axis=-1)  # (n_agents, n_grid)
+    # Compute cosine-decay weights based on distance
+    # ψ(d) = rho_cos_dec(d, d_sen, delta)
+    # Grids within sensing range get weight > 0, outside get 0
+    psi_weights = rho_cos_dec(distances, d_sen, cosine_decay_delta)  # (n_agents, n_grid)
     
-    # Grid cells within sensing range of each agent
-    in_range = agent_to_grid_dist < d_sen  # (n_agents, n_grid)
-    
-    # For simplicity, consider a grid cell "unoccupied" if no agent is within
-    # collision_threshold/2 of it
-    # This is a simplified version - the original C++ code is more complex
-    
-    # Distance from all agents to all grid cells
-    all_agent_to_grid_dist = jnp.linalg.norm(
-        grid_centers[None, :, :] - positions[:, None, :], axis=-1
-    )  # (n_agents, n_grid)
-    
-    # A grid cell is occupied if ANY agent is close to it
-    occupied = jnp.any(all_agent_to_grid_dist < collision_threshold / 2, axis=0)  # (n_grid,)
-    
-    # Unoccupied and in range for each agent
-    unoccupied_in_range = in_range & ~occupied[None, :]  # (n_agents, n_grid)
-    
-    # Compute centroid of unoccupied cells for each agent
-    # Weight by whether cell is in range and unoccupied
-    weights = unoccupied_in_range.astype(jnp.float32)  # (n_agents, n_grid)
-    weight_sum = jnp.sum(weights, axis=1, keepdims=True)  # (n_agents, 1)
+    # Compute weighted centroid of relative positions for each agent
+    # v_exp_i = Σ_j(ψ_ij × rel_pos_ij) / Σ_j(ψ_ij)
+    weight_sum = jnp.sum(psi_weights, axis=1, keepdims=True)  # (n_agents, 1)
     weight_sum = jnp.maximum(weight_sum, 1e-8)  # Avoid division by zero
     
-    # Weighted centroid
-    centroids = jnp.sum(
-        weights[:, :, None] * grid_centers[None, :, :], axis=1
-    ) / weight_sum  # (n_agents, 2)
+    # Weighted sum of relative positions
+    weighted_rel_pos = psi_weights[:, :, None] * rel_pos  # (n_agents, n_grid, 2)
+    v_exp = jnp.sum(weighted_rel_pos, axis=1) / weight_sum  # (n_agents, 2)
     
-    # Distance from each agent to centroid
-    dist_to_centroid = jnp.linalg.norm(positions - centroids, axis=1)  # (n_agents,)
+    # Compute norm of weighted centroid
+    v_exp_norm = jnp.linalg.norm(v_exp, axis=1)  # (n_agents,)
     
-    # Exploration reward if close to centroid
-    is_exploring = dist_to_centroid < exploration_threshold
+    # Agent is "uniform" if ||v_exp|| < threshold
+    # This means the agent is approximately centered among sensed grid cells
+    is_uniform = v_exp_norm < exploration_threshold
     
-    # Only give reward if in target and has unoccupied cells
-    has_unoccupied = jnp.sum(weights, axis=1) > 0
-    exploration_reward = (in_target & is_exploring & has_unoccupied).astype(jnp.float32)
+    # Only give reward if in target region
+    # (Collision check is done separately in compute_rewards)
+    exploration_reward = (in_target & is_uniform).astype(jnp.float32)
     
     return exploration_reward
 
@@ -254,12 +284,13 @@ def compute_rewards(
         is_periodic, boundary_width, boundary_height
     )
     
-    # 3. Compute exploration component
+    # 3. Compute exploration/uniformity component (matches C++ MARL logic)
     exploration = compute_exploration_reward(
         positions, grid_centers, in_target, neighbor_indices,
         reward_params.collision_threshold,
         reward_params.exploration_threshold,
-        d_sen
+        d_sen,
+        reward_params.cosine_decay_delta,
     )
     
     # 4. Compute individual rewards (matches MARL C++ logic)

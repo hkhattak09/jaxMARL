@@ -517,7 +517,7 @@ def run_episode(
         "coverage_rate": float(total_coverage) / num_steps if num_steps > 0 else 0.0,
         "collision_rate": float(total_collision) / num_steps if num_steps > 0 else 0.0,
         "step_time": step_time,
-        "noise_scale": float(noise_scale),
+        "noise_scale": float(maddpg_state.noise_scale),
         "steps_in_episode": num_steps,
         "n_parallel_envs": n_envs,
         "total_transitions": num_steps * n_envs,

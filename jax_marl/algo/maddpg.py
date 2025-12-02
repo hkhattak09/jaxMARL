@@ -1102,14 +1102,11 @@ class MADDPG:
                     total_critic_loss = total_critic_loss + critic_info['critic_loss']
                 
                 new_step = state.step + 1
-                new_noise = config.noise_scale_initial - jnp.minimum(
-                    1.0, new_step / config.noise_decay_steps
-                ) * (config.noise_scale_initial - config.noise_scale_final)
-                
+                # Note: noise_scale is managed by the training loop (based on total env steps),
+                # not here (which would be based on gradient update steps)
                 new_state = state.replace(
                     agent_states=new_agent_states,
                     step=new_step,
-                    noise_scale=new_noise,
                 )
                 
                 return new_state, total_actor_loss / n_agents, total_critic_loss / n_agents

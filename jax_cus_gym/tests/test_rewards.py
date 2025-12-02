@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from rewards import (
     RewardParams,
+    rho_cos_dec,
     compute_in_target,
     compute_agent_collisions,
     compute_exploration_reward,
@@ -398,6 +399,232 @@ def test_rewards_vmap():
     print("  ✓ Rewards vmap compatibility tests passed")
 
 
+# ============================================================
+# NEW TESTS FOR C++ MARL MATCHING
+# ============================================================
+
+def test_rho_cos_dec_basic():
+    """Test cosine decay weighting function basic behavior.
+    
+    This function matches the C++ _rho_cos_dec implementation:
+    - Returns 1.0 when z < delta * r (close range)
+    - Smoothly decays when delta * r <= z < r
+    - Returns 0.0 when z >= r (far away)
+    """
+    print("Testing rho_cos_dec basic behavior...")
+    
+    r = 1.0
+    delta = 0.5
+    
+    # Test at key points
+    z = jnp.array([0.0, 0.25, 0.5, 0.75, 1.0, 1.5])
+    weights = rho_cos_dec(z, r, delta)
+    
+    # z=0.0: well within delta*r=0.5, should be 1.0
+    assert jnp.isclose(weights[0], 1.0), f"Expected 1.0 at z=0, got {weights[0]}"
+    
+    # z=0.25: still within delta*r=0.5, should be 1.0
+    assert jnp.isclose(weights[1], 1.0), f"Expected 1.0 at z=0.25, got {weights[1]}"
+    
+    # z=0.5: exactly at delta*r, should be 1.0 (boundary of close range)
+    assert jnp.isclose(weights[2], 1.0), f"Expected 1.0 at z=0.5, got {weights[2]}"
+    
+    # z=0.75: in decay zone, should be ~0.5 (midpoint of cosine decay)
+    assert 0.4 < weights[3] < 0.6, f"Expected ~0.5 at z=0.75, got {weights[3]}"
+    
+    # z=1.0: at boundary, should be 0.0
+    assert jnp.isclose(weights[4], 0.0, atol=1e-5), f"Expected 0.0 at z=1.0, got {weights[4]}"
+    
+    # z=1.5: beyond range, should be 0.0
+    assert jnp.isclose(weights[5], 0.0), f"Expected 0.0 at z=1.5, got {weights[5]}"
+    
+    print("  ✓ rho_cos_dec basic behavior tests passed")
+
+
+def test_rho_cos_dec_different_params():
+    """Test rho_cos_dec with different r and delta values."""
+    print("Testing rho_cos_dec with different parameters...")
+    
+    # Test with larger range
+    r = 3.0
+    delta = 0.5
+    
+    # z=1.0 should be in close range (< delta*r = 1.5)
+    assert jnp.isclose(rho_cos_dec(jnp.array([1.0]), r, delta)[0], 1.0)
+    
+    # z=2.0 should be in decay zone (1.5 <= z < 3.0)
+    weight_at_2 = rho_cos_dec(jnp.array([2.0]), r, delta)[0]
+    assert 0.0 < weight_at_2 < 1.0, f"Expected decay at z=2.0, got {weight_at_2}"
+    
+    # Test with different delta
+    delta = 0.8  # Larger close range
+    r = 1.0
+    
+    # z=0.7 should still be in close range (< 0.8)
+    assert jnp.isclose(rho_cos_dec(jnp.array([0.7]), r, delta)[0], 1.0)
+    
+    # z=0.9 should be in decay zone
+    weight_at_09 = rho_cos_dec(jnp.array([0.9]), r, delta)[0]
+    assert 0.0 < weight_at_09 < 1.0
+    
+    print("  ✓ rho_cos_dec different parameters tests passed")
+
+
+def test_rho_cos_dec_vectorized():
+    """Test that rho_cos_dec works with vectorized inputs."""
+    print("Testing rho_cos_dec vectorization...")
+    
+    r = 2.0
+    delta = 0.5
+    
+    # Test with 2D array (like distances from n_agents to n_grids)
+    z = jnp.array([
+        [0.5, 1.0, 1.5, 2.0, 2.5],
+        [0.0, 0.5, 1.0, 1.5, 3.0],
+    ])  # (2, 5)
+    
+    weights = rho_cos_dec(z, r, delta)
+    
+    assert weights.shape == (2, 5), f"Expected shape (2, 5), got {weights.shape}"
+    
+    # Check specific values
+    assert jnp.isclose(weights[0, 0], 1.0)  # z=0.5 < delta*r=1.0
+    assert jnp.isclose(weights[0, 3], 0.0, atol=1e-5)  # z=2.0 = r
+    assert jnp.isclose(weights[1, 0], 1.0)  # z=0.0
+    assert jnp.isclose(weights[1, 4], 0.0)  # z=3.0 > r
+    
+    print("  ✓ rho_cos_dec vectorization tests passed")
+
+
+def test_exploration_reward_symmetric_grids():
+    """Test exploration reward with symmetric grid arrangement.
+    
+    When an agent is at the center of symmetrically arranged grids,
+    the weighted centroid of relative positions should be ~0,
+    giving a reward of 1.0.
+    """
+    print("Testing exploration reward with symmetric grids...")
+    
+    # Agent at origin with 4 symmetric grids around it
+    positions = jnp.array([[0.0, 0.0]])  # 1 agent at origin
+    grid_centers = jnp.array([
+        [0.5, 0.0],   # right
+        [-0.5, 0.0],  # left  
+        [0.0, 0.5],   # up
+        [0.0, -0.5],  # down
+    ])
+    in_target = jnp.array([True])
+    neighbor_indices = jnp.zeros((1, 1), dtype=jnp.int32)
+    
+    reward = compute_exploration_reward(
+        positions, grid_centers, in_target, neighbor_indices,
+        collision_threshold=0.15, exploration_threshold=0.05,
+        d_sen=3.0, cosine_decay_delta=0.5
+    )
+    
+    # Agent is centered, so weighted centroid should be ~0
+    # Therefore reward should be 1.0
+    assert reward[0] == 1.0, f"Expected reward 1.0 for centered agent, got {reward[0]}"
+    
+    print("  ✓ Exploration reward symmetric grids test passed")
+
+
+def test_exploration_reward_asymmetric_grids():
+    """Test exploration reward with asymmetric grid arrangement.
+    
+    When grids are all on one side, the weighted centroid of relative
+    positions will have large norm, giving reward 0.0.
+    """
+    print("Testing exploration reward with asymmetric grids...")
+    
+    # Agent at origin with grids only to the right
+    positions = jnp.array([[0.0, 0.0]])
+    grid_centers = jnp.array([
+        [0.5, 0.0],
+        [1.0, 0.0],
+        [1.5, 0.0],
+        [2.0, 0.0],
+    ])
+    in_target = jnp.array([True])
+    neighbor_indices = jnp.zeros((1, 1), dtype=jnp.int32)
+    
+    reward = compute_exploration_reward(
+        positions, grid_centers, in_target, neighbor_indices,
+        collision_threshold=0.15, exploration_threshold=0.05,
+        d_sen=3.0, cosine_decay_delta=0.5
+    )
+    
+    # Agent is not centered (grids all to the right)
+    # Weighted centroid will point right with large norm
+    # Therefore reward should be 0.0
+    assert reward[0] == 0.0, f"Expected reward 0.0 for off-center agent, got {reward[0]}"
+    
+    print("  ✓ Exploration reward asymmetric grids test passed")
+
+
+def test_exploration_reward_not_in_target():
+    """Test that exploration reward is 0 when agent is not in target."""
+    print("Testing exploration reward when not in target...")
+    
+    # Agent at origin with symmetric grids, but NOT in target
+    positions = jnp.array([[0.0, 0.0]])
+    grid_centers = jnp.array([
+        [0.5, 0.0],
+        [-0.5, 0.0],
+        [0.0, 0.5],
+        [0.0, -0.5],
+    ])
+    in_target = jnp.array([False])  # NOT in target
+    neighbor_indices = jnp.zeros((1, 1), dtype=jnp.int32)
+    
+    reward = compute_exploration_reward(
+        positions, grid_centers, in_target, neighbor_indices,
+        collision_threshold=0.15, exploration_threshold=0.05,
+        d_sen=3.0, cosine_decay_delta=0.5
+    )
+    
+    # Even though centered, not in target -> no reward
+    assert reward[0] == 0.0, f"Expected reward 0.0 when not in target, got {reward[0]}"
+    
+    print("  ✓ Exploration reward not in target test passed")
+
+
+def test_exploration_reward_multiple_agents():
+    """Test exploration reward with multiple agents."""
+    print("Testing exploration reward with multiple agents...")
+    
+    # 3 agents with different configurations
+    positions = jnp.array([
+        [0.0, 0.0],   # Agent 0: centered among grids
+        [2.0, 0.0],   # Agent 1: off to the side (grids on left)
+        [0.0, 2.0],   # Agent 2: far from grids
+    ])
+    grid_centers = jnp.array([
+        [0.5, 0.0],
+        [-0.5, 0.0],
+        [0.0, 0.5],
+        [0.0, -0.5],
+    ])
+    in_target = jnp.array([True, True, True])
+    neighbor_indices = jnp.zeros((3, 1), dtype=jnp.int32)
+    
+    rewards = compute_exploration_reward(
+        positions, grid_centers, in_target, neighbor_indices,
+        collision_threshold=0.15, exploration_threshold=0.05,
+        d_sen=3.0, cosine_decay_delta=0.5
+    )
+    
+    assert rewards.shape == (3,)
+    
+    # Agent 0 should get reward (centered)
+    assert rewards[0] == 1.0, f"Agent 0 should get reward, got {rewards[0]}"
+    
+    # Agent 1 should NOT get reward (grids all on left side relative to agent)
+    assert rewards[1] == 0.0, f"Agent 1 should not get reward, got {rewards[1]}"
+    
+    print("  ✓ Exploration reward multiple agents test passed")
+
+
 if __name__ == "__main__":
     print("\n" + "="*60)
     print("Running rewards module tests")
@@ -415,6 +642,19 @@ if __name__ == "__main__":
     test_collision_count()
     test_rewards_jit()
     test_rewards_vmap()
+    
+    # New tests for C++ MARL matching
+    print("\n" + "-"*60)
+    print("Testing C++ MARL matching (new)")
+    print("-"*60 + "\n")
+    
+    test_rho_cos_dec_basic()
+    test_rho_cos_dec_different_params()
+    test_rho_cos_dec_vectorized()
+    test_exploration_reward_symmetric_grids()
+    test_exploration_reward_asymmetric_grids()
+    test_exploration_reward_not_in_target()
+    test_exploration_reward_multiple_agents()
     
     print("\n" + "="*60)
     print("All tests passed! ✓")

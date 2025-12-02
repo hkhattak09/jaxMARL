@@ -825,6 +825,117 @@ def test_standalone_prior_policy():
     return True
 
 
+def test_prior_policy_repulsion_strength():
+    """Test that prior policy has correct repulsion strength (3.0, matching C++ MARL).
+    
+    When two agents are very close (within r_avoid), the repulsion force should
+    be strong enough to push them apart. With repulsion_strength=3.0, the
+    repulsion magnitude is: 3.0 * (r_avoid / dist - 1.0)
+    """
+    print_subheader("Prior Policy Repulsion Strength")
+    
+    from assembly_env import compute_prior_policy
+    
+    # Two agents very close together (distance = 0.1, r_avoid = 0.15)
+    # Repulsion should dominate
+    positions = jnp.array([
+        [0.0, 0.0],   # Agent 0
+        [0.1, 0.0],   # Agent 1, very close to agent 0
+    ])
+    velocities = jnp.zeros((2, 2))
+    
+    # Grid far away so attraction is minimal
+    grid_centers = jnp.array([
+        [10.0, 0.0],
+        [10.0, 1.0],
+    ])
+    grid_mask = jnp.array([True, True])
+    
+    l_cell = 0.3
+    r_avoid = 0.15  # Agents at distance 0.1 < 0.15
+    d_sen = 3.0
+    
+    actions = compute_prior_policy(
+        positions, velocities, grid_centers, grid_mask,
+        l_cell, r_avoid, d_sen,
+        attraction_strength=2.0,
+        repulsion_strength=3.0,  # C++ MARL default
+        sync_strength=2.0,
+    )
+    
+    # Agent 0 should be pushed LEFT (negative x) away from agent 1
+    # Agent 1 should be pushed RIGHT (positive x) away from agent 0
+    assert actions[0, 0] < 0, f"Agent 0 should be pushed left, got x={actions[0, 0]}"
+    assert actions[1, 0] > 0, f"Agent 1 should be pushed right, got x={actions[1, 0]}"
+    
+    # Calculate expected repulsion magnitude:
+    # dist = 0.1, r_avoid = 0.15
+    # repulsion_mag = 3.0 * (0.15 / 0.1 - 1.0) = 3.0 * 0.5 = 1.5
+    # This is strong repulsion (will be clipped to [-1, 1])
+    
+    # The actions should be clipped, but still show strong repulsion
+    assert jnp.abs(actions[0, 0]) > 0.5, f"Repulsion should be strong, got {actions[0, 0]}"
+    assert jnp.abs(actions[1, 0]) > 0.5, f"Repulsion should be strong, got {actions[1, 0]}"
+    
+    # Compare with weaker repulsion (old default of 1.0)
+    actions_weak = compute_prior_policy(
+        positions, velocities, grid_centers, grid_mask,
+        l_cell, r_avoid, d_sen,
+        attraction_strength=2.0,
+        repulsion_strength=1.0,  # Old incorrect default
+        sync_strength=2.0,
+    )
+    
+    # With repulsion_strength=3.0, the repulsion component should be 3x stronger
+    # (before clipping). The default should give stronger repulsion.
+    print(f"    Actions with repulsion_strength=3.0: {actions}")
+    print(f"    Actions with repulsion_strength=1.0: {actions_weak}")
+    
+    print("  ✓ Prior policy repulsion strength test passed")
+    return True
+
+
+def test_prior_policy_in_target_behavior():
+    """Test that prior policy gives zero attraction when agent is in target.
+    
+    This matches C++ MARL: when in_flag=true, target_pos = current_pos,
+    so attraction force becomes zero (agent stays in place, only affected
+    by repulsion and sync).
+    """
+    print_subheader("Prior Policy In-Target Behavior")
+    
+    from assembly_env import compute_prior_policy
+    
+    # Agent exactly on a grid cell (in target)
+    positions = jnp.array([[0.0, 0.0]])
+    velocities = jnp.zeros((1, 2))
+    
+    # Grid at origin (agent is on it)
+    grid_centers = jnp.array([[0.0, 0.0]])
+    grid_mask = jnp.array([True])
+    
+    l_cell = 0.5  # Agent is within sqrt(2)*0.5/2 ≈ 0.35 of grid center
+    r_avoid = 0.15
+    d_sen = 3.0
+    
+    actions = compute_prior_policy(
+        positions, velocities, grid_centers, grid_mask,
+        l_cell, r_avoid, d_sen,
+    )
+    
+    # With only 1 agent and no neighbors, and agent is in target:
+    # - Attraction: 0 (in target, so no attraction)
+    # - Repulsion: 0 (no other agents)
+    # - Sync: 0 (no neighbors)
+    # Total: [0, 0]
+    
+    assert jnp.allclose(actions[0], jnp.zeros(2), atol=1e-6), \
+        f"In-target agent with no neighbors should have zero action, got {actions[0]}"
+    
+    print("  ✓ Prior policy in-target behavior test passed")
+    return True
+
+
 # ============================================================
 # OCCUPIED GRID TRACKING TESTS
 # ============================================================
@@ -1042,6 +1153,8 @@ def run_all_tests():
         ("Trajectory Tracking", test_trajectory_tracking),
         ("Prior Policy", test_prior_policy),
         ("Standalone Prior Policy", test_standalone_prior_policy),
+        ("Prior Policy Repulsion Strength", test_prior_policy_repulsion_strength),
+        ("Prior Policy In-Target Behavior", test_prior_policy_in_target_behavior),
         ("Occupied Grid Tracking", test_occupied_grid_tracking),
         ("Reward Sharing", test_reward_sharing),
         

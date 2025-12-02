@@ -614,15 +614,20 @@ def compute_prior_policy(
     r_avoid: float,
     d_sen: float,
     attraction_strength: float = 2.0,
-    repulsion_strength: float = 1.0,
+    repulsion_strength: float = 3.0,  # Matches C++ MARL default
     sync_strength: float = 2.0,
 ) -> jnp.ndarray:
-    """Compute rule-based prior policy for all agents.
+    """Compute rule-based prior policy for all agents (matches C++ MARL).
     
-    Three-component policy:
-    1. Attraction: Move toward nearest unoccupied target cell
-    2. Repulsion: Avoid nearby agents within r_avoid
-    3. Synchronization: Match velocity with neighbors
+    Three-component Reynolds-style flocking policy:
+    1. Attraction: Move toward nearest target cell (goal-seeking)
+    2. Repulsion: Avoid nearby agents within r_avoid (separation)
+    3. Synchronization: Match velocity with neighbors (alignment)
+    
+    Parameters match C++ implementation:
+        - attraction_strength: 2.0
+        - repulsion_strength: 3.0 
+        - sync_strength: 2.0
     """
     n_agents = positions.shape[0]
     
