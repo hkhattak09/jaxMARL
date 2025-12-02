@@ -159,62 +159,10 @@ config = None
 
 # -------------------- SMALL SCALE EXPERIMENT --------------------
 # Use this for quick experiments with fewer agents
-config = AssemblyTrainConfig(
-    # Environment
-    n_agents=10,
-    n_parallel_envs=4,
-    arena_size=5.0,
-    agent_radius=0.1,
-    max_velocity=0.8,
-    max_acceleration=1.0,
-    # Observation
-    k_neighbors=6,
-    d_sen=3.0,
-    include_self_state=True,
-    # Physics
-    dt=0.1,
-    # Episode
-    max_steps=150,
-    # Domain randomization
-    randomize_shape=True,
-    randomize_rotation=True,
-    randomize_scale=True,
-    randomize_offset=True,
-    # Reward
-    reward_mode="individual",
-    # Algorithm
-    hidden_dim=256,
-    lr_actor=1e-4,
-    lr_critic=1e-3,
-    gamma=0.95,
-    tau=0.01,
-    buffer_size=50000,
-    batch_size=512,
-    warmup_steps=2000,
-    noise_scale_initial=0.9,
-    noise_scale_final=0.1,
-    noise_decay_steps=264000,
-    update_every=100,
-    updates_per_step=20,
-    prior_weight=0.3,
-    # Training
-    seed=226,
-    n_episodes=1000,
-    log_interval=1,
-    save_interval=50,
-    eval_interval=25,
-    # Paths
-    shape_file=None,
-    checkpoint_dir=None,
-    log_dir=None,
-)
-
-# # -------------------- FULL SCALE TRAINING --------------------
-# # Use this for full training runs
 # config = AssemblyTrainConfig(
 #     # Environment
-#     n_agents=30,
-#     n_parallel_envs=8,
+#     n_agents=10,
+#     n_parallel_envs=4,
 #     arena_size=5.0,
 #     agent_radius=0.1,
 #     max_velocity=0.8,
@@ -226,7 +174,7 @@ config = AssemblyTrainConfig(
 #     # Physics
 #     dt=0.1,
 #     # Episode
-#     max_steps=200,
+#     max_steps=150,
 #     # Domain randomization
 #     randomize_shape=True,
 #     randomize_rotation=True,
@@ -240,26 +188,78 @@ config = AssemblyTrainConfig(
 #     lr_critic=1e-3,
 #     gamma=0.95,
 #     tau=0.01,
-#     buffer_size=,
-#     batch_size=400000,
-#     warmup_steps=5000,
-#     noise_scale_initial=0.5,
+#     buffer_size=50000,
+#     batch_size=512,
+#     warmup_steps=2000,
+#     noise_scale_initial=0.9,
 #     noise_scale_final=0.1,
-#     noise_decay_steps=2112000,
+#     noise_decay_steps=264000,
 #     update_every=100,
-#     updates_per_step=30,
-#     prior_weight=0.5,
+#     updates_per_step=20,
+#     prior_weight=0.3,
 #     # Training
 #     seed=226,
-#     n_episodes=3000,
+#     n_episodes=1000,
 #     log_interval=1,
-#     save_interval=100,
-#     eval_interval=50,
+#     save_interval=50,
+#     eval_interval=25,
 #     # Paths
 #     shape_file=None,
 #     checkpoint_dir=None,
 #     log_dir=None,
 # )
+
+# # -------------------- FULL SCALE TRAINING --------------------
+# # Use this for full training runs
+config = AssemblyTrainConfig(
+    # Environment
+    n_agents=25,
+    n_parallel_envs=8,
+    arena_size=5.0,
+    agent_radius=0.1,
+    max_velocity=0.8,
+    max_acceleration=1.0,
+    # Observation
+    k_neighbors=6,
+    d_sen=3.0,
+    include_self_state=True,
+    # Physics
+    dt=0.1,
+    # Episode
+    max_steps=200,
+    # Domain randomization
+    randomize_shape=True,
+    randomize_rotation=True,
+    randomize_scale=True,
+    randomize_offset=True,
+    # Reward
+    reward_mode="individual",
+    # Algorithm
+    hidden_dim=256,
+    lr_actor=1e-4,
+    lr_critic=1e-3,
+    gamma=0.95,
+    tau=0.01,
+    buffer_size=400000,
+    batch_size=2048,
+    warmup_steps=5000,
+    noise_scale_initial=0.5,
+    noise_scale_final=0.1,
+    noise_decay_steps=2112000,
+    update_every=100,
+    updates_per_step=30,
+    prior_weight=0.5,
+    # Training
+    seed=226,
+    n_episodes=3000,
+    log_interval=1,
+    save_interval=100,
+    eval_interval=50,
+    # Paths
+    shape_file=None,
+    checkpoint_dir=None,
+    log_dir=None,
+)
 
 
 # ============================================================================
