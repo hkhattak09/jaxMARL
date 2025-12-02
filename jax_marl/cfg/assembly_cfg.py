@@ -8,17 +8,15 @@ faster training (see n_parallel_envs parameter).
 """
 
 
-# set the training steps to decay to (44% of total training epsiodes)*max_step/epsiode*n_envs in the training config when defining it, it is dependant on number of envs.
-# set buffer size for each config it is (1/12 * total epsiodes)*max_steps*n_env, to allow for off policy learning i.e you learn from previosu data as well you dont just forget
+# set the training steps for noise decay to (44% of total training epsiodes)*max_step/epsiode*n_envs in the training config when defining it, it is dependant on number of envs.
+# set buffer size for each config it is (0.05 * total epsiodes)*max_steps*n_env, to allow for off policy learning i.e you learn from previosu data as well you dont just forget
 
 from typing import Optional, NamedTuple
 from pathlib import Path
 
 
 class AssemblyTrainConfig(NamedTuple):
-    """Training configuration - EDIT VALUES HERE.
-    
-    Just change the default values below to configure your training run.
+    """Training configuration - Default
     """
     
     # ================== Environment ==================
@@ -46,8 +44,11 @@ class AssemblyTrainConfig(NamedTuple):
     randomize_scale: bool = True        # Random scaling
     randomize_offset: bool = True       # Random translation
     
-    # Reward
-    reward_mode: str = "individual"     # "individual", "shared_mean", "shared_max"
+    # Reward mode (integer for JAX JIT compatibility)
+    # 0 = individual (each agent gets own reward)
+    # 1 = shared_mean (all agents get mean reward)
+    # 2 = shared_max (all agents get max reward)
+    reward_mode: int = 0
     
     # ================== Algorithm (MADDPG) ==================
     hidden_dim: int = 256               # Neural network hidden layer size
@@ -125,14 +126,14 @@ config = None
 #     randomize_scale=True,
 #     randomize_offset=True,
 #     # Reward
-#     reward_mode="individual",
+#     reward_mode=0, 
 #     # Algorithm
 #     hidden_dim=128,
 #     lr_actor=1e-4,
 #     lr_critic=1e-3,
 #     gamma=0.95,
 #     tau=0.01,
-#     buffer_size=833,
+#     buffer_size=800,
 #     batch_size=64,
 #     warmup_steps=100,
 #     noise_scale_initial=0.9,
@@ -147,7 +148,7 @@ config = None
 #     log_interval=1,
 #     save_interval=5,
 #     # Evaluation
-#     eval_interval=10,
+#     eval_interval=90,
 #     eval_save_video=True,
 #     eval_video_fps=10,
 #     # Paths
@@ -233,7 +234,7 @@ config = AssemblyTrainConfig(
     randomize_scale=True,
     randomize_offset=True,
     # Reward
-    reward_mode="individual",
+    reward_mode=0,  # 0=individual, 1=shared_mean, 2=shared_max
     # Algorithm
     hidden_dim=256,
     lr_actor=1e-4,

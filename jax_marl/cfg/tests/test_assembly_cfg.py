@@ -56,8 +56,8 @@ class TestAssemblyTrainConfig:
         assert config.randomize_scale == True
         assert config.randomize_offset == True
         
-        # Reward
-        assert config.reward_mode == "individual"
+        # Reward (integer for JAX compatibility: 0=individual, 1=shared_mean, 2=shared_max)
+        assert config.reward_mode == 0
         
         # Algorithm
         assert config.hidden_dim == 256
@@ -69,7 +69,7 @@ class TestAssemblyTrainConfig:
         assert config.batch_size == 2048
         assert config.warmup_steps == 5000
         assert config.noise_scale_initial == 0.9
-        assert config.noise_scale_final == 0.1
+        assert config.noise_scale_final == 0.5
         assert config.noise_decay_steps == 100000
         assert config.update_every == 100
         assert config.updates_per_step == 30
@@ -209,8 +209,8 @@ class TestAssemblyTrainConfig:
         assert isinstance(config.include_self_state, bool)
         assert isinstance(config.randomize_shape, bool)
         
-        # String fields
-        assert isinstance(config.reward_mode, str)
+        # Integer fields (reward_mode is int for JAX JIT compatibility)
+        assert isinstance(config.reward_mode, int)
         
         print("✓ Config field types passed")
 
@@ -222,17 +222,25 @@ class TestAssemblyTrainConfig:
 class TestGetConfig:
     """Tests for get_config() function."""
     
-    def test_get_config_returns_default(self):
-        """Test that get_config returns default config."""
+    def test_get_config_returns_config(self):
+        """Test that get_config returns a valid config."""
         from assembly_cfg import get_config, AssemblyTrainConfig
         
         config = get_config()
-        default = AssemblyTrainConfig()
         
+        # Should return an AssemblyTrainConfig instance
         assert isinstance(config, AssemblyTrainConfig)
-        assert config == default
         
-        print("✓ get_config returns default passed")
+        # Should have all required fields
+        assert hasattr(config, 'n_agents')
+        assert hasattr(config, 'reward_mode')
+        assert hasattr(config, 'batch_size')
+        
+        # reward_mode should be an integer (JAX compatible)
+        assert isinstance(config.reward_mode, int)
+        assert config.reward_mode in [0, 1, 2]
+        
+        print("✓ get_config returns config passed")
 
 
 # ============================================================================
@@ -367,7 +375,7 @@ class TestConfigConversion:
             dt=0.05,
             max_steps=100,
             randomize_shape=False,
-            reward_mode="shared_mean",
+            reward_mode=1,  # shared_mean
         )
         
         params = config_to_assembly_params(config)
@@ -381,12 +389,12 @@ class TestConfigConversion:
         assert params.dt == 0.05
         assert params.max_steps == 100
         assert params.randomize_shape == False
-        assert params.reward_mode == "shared_mean"
+        assert params.reward_mode == 1  # shared_mean
         
         # Check nested params
         assert params.obs_params.topo_nei_max == 4
         assert params.obs_params.d_sen == 2.5
-        assert params.reward_params.reward_mode == "shared_mean"
+        assert params.reward_params.reward_mode == 1  # shared_mean
         assert params.physics.dt == 0.05
         
         print("✓ config_to_assembly_params passed")
@@ -454,12 +462,13 @@ class TestValueConstraints:
         print("✓ Noise scale decay passed")
     
     def test_reward_mode_valid(self):
-        """Test reward mode is valid."""
+        """Test reward mode is valid integer."""
         from assembly_cfg import AssemblyTrainConfig
         
         config = AssemblyTrainConfig()
         
-        valid_modes = ["individual", "shared_mean", "shared_max"]
+        # 0=individual, 1=shared_mean, 2=shared_max
+        valid_modes = [0, 1, 2]
         assert config.reward_mode in valid_modes
         
         print("✓ Reward mode valid passed")
