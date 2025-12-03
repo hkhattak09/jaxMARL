@@ -1,0 +1,27 @@
+cd /Users/hassan/repos/jaxMARL/jax_cus_gym && python -c "
+import jax
+import jax.numpy as jnp
+from assembly_env import AssemblySwarmEnv, AssemblyParams, compute_prior_policy, compute_r_avoid
+
+# Create env
+env = AssemblySwarmEnv(n_agents=10)
+params = AssemblyParams(agent_radius=0.035, r_avoid=None)
+
+# Reset
+key = jax.random.PRNGKey(42)
+obs, state = env.reset(key, params)
+
+print('State l_cell:', state.l_cell)
+print('Grid cells:', jnp.sum(state.grid_mask))
+
+# Test r_avoid computation
+r_avoid = compute_r_avoid(state.grid_mask, 10, state.l_cell, None)
+print('Computed r_avoid:', r_avoid)
+
+# Test prior policy
+actions = env.prior_policy(state, params)
+print('Prior actions shape:', actions.shape)
+print('Prior actions range:', jnp.min(actions), 'to', jnp.max(actions))
+
+print('\\nAll tests passed!')
+"
