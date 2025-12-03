@@ -675,9 +675,10 @@ def compute_r_avoid(
     computed = jnp.sqrt(4.0 * n_grid / (n_agents * jnp.pi)) * l_cell
     
     # Use override if provided and positive, otherwise use computed
-    # For JIT compatibility, we use jnp.where with a sentinel value
+    # Python if is fine here because override_r_avoid is a static config value
+    # known at trace time (not a traced JAX array)
     if override_r_avoid is not None and override_r_avoid > 0:
-        return override_r_avoid
+        return jnp.float32(override_r_avoid)  # Ensure JAX type
     return computed
 
 

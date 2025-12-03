@@ -35,7 +35,7 @@ class AssemblyTrainConfig(NamedTuple):
     
     # Observation
     k_neighbors: int = 6                # Number of nearest neighbors to observe
-    d_sen: float = 3.0                  # Sensing distance
+    d_sen: float = 0.4                  # Sensing distance (matches MARL-LLM reset value)
     include_self_state: bool = True     # Include own position/velocity
     
     # Physics
