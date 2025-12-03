@@ -257,9 +257,12 @@ def create_jit_rollout_fn(
     def compute_priors_batch(positions, velocities, grid_centers, grid_mask, l_cell):
         """Compute prior actions for all environments."""
         def single_env_prior(pos, vel, gc, gm, lc):
+            # Compute r_avoid dynamically using MARL-LLM formula
+            from assembly_env import compute_r_avoid
+            r_avoid = compute_r_avoid(gm, n_agents, lc, params.r_avoid)
             return compute_prior_policy(
                 pos, vel, gc, gm, lc,
-                params.reward_params.collision_threshold,
+                r_avoid,
                 params.d_sen,
             )
         return jax.vmap(single_env_prior)(positions, velocities, grid_centers, grid_mask, l_cell)
@@ -451,9 +454,12 @@ def run_episode(
             
             if config.prior_weight > 0:
                 def compute_priors_single_env(positions, velocities, grid_centers, grid_mask, l_cell):
+                    # Compute r_avoid dynamically using MARL-LLM formula
+                    from assembly_env import compute_r_avoid
+                    r_avoid = compute_r_avoid(grid_mask, n_agents, l_cell, params.r_avoid)
                     return compute_prior_policy(
                         positions, velocities, grid_centers, grid_mask, l_cell,
-                        params.reward_params.collision_threshold,
+                        r_avoid,
                         params.d_sen,
                     )
                 

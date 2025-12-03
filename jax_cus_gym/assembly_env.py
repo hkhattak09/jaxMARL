@@ -179,6 +179,11 @@ class AssemblyParams:
     # Trajectory
     traj_len: int = 15
     
+    # Prior policy
+    # r_avoid for prior policy repulsion (None = compute dynamically per shape)
+    # Formula: sqrt(4*n_grid/(n_agents*pi)) * l_cell
+    r_avoid: float = None
+    
     # Reward sharing (use integer: 0=individual, 1=shared_mean, 2=shared_max)
     reward_mode: int = 0  # REWARD_MODE_INDIVIDUAL
 
@@ -579,20 +584,33 @@ class AssemblySwarmEnv(MultiAgentEnv):
         """Compute rule-based prior policy for all agents.
         
         Based on:
-        1. Attraction to nearest target cell
-        2. Repulsion from nearby agents
+        1. Attraction to nearest UNOCCUPIED target cell
+        2. Repulsion from nearby agents within r_avoid
         3. Velocity synchronization with neighbors
+        
+        r_avoid is computed dynamically using the MARL-LLM formula:
+            r_avoid = sqrt(4 * n_grid / (n_agents * pi)) * l_cell
+        This ensures proper spacing based on shape size and agent count.
         
         Returns:
             actions: (n_agents, 2) prior policy actions
         """
+        # Compute r_avoid using MARL-LLM formula:
+        # r_avoid = sqrt(4 * n_grid / (n_agents * pi)) * l_cell
+        r_avoid = compute_r_avoid(
+            state.grid_mask, 
+            self._n_agents, 
+            state.l_cell,
+            params.r_avoid,
+        )
+        
         return compute_prior_policy(
             state.positions,
             state.velocities,
             state.grid_centers,
             state.grid_mask,
             state.l_cell,
-            params.reward_params.collision_threshold,
+            r_avoid,
             params.d_sen,
         )
     
@@ -632,6 +650,36 @@ class AssemblySwarmEnv(MultiAgentEnv):
         return 2
 
 
+def compute_r_avoid(
+    grid_mask: jnp.ndarray,
+    n_agents: int,
+    l_cell: float,
+    override_r_avoid: float = None,
+) -> float:
+    """Compute r_avoid using MARL-LLM formula.
+    
+    Formula: r_avoid = sqrt(4 * n_grid / (n_agents * pi)) * l_cell
+    
+    This ensures agents are spaced appropriately for the shape size.
+    
+    Args:
+        grid_mask: Boolean mask of valid grid cells (n_grid,)
+        n_agents: Number of agents
+        l_cell: Grid cell size
+        override_r_avoid: If provided and > 0, use this value instead
+        
+    Returns:
+        r_avoid: Repulsion radius for prior policy
+    """
+    n_grid = jnp.sum(grid_mask)
+    computed = jnp.sqrt(4.0 * n_grid / (n_agents * jnp.pi)) * l_cell
+    
+    # Use override if provided and positive, otherwise use computed
+    # For JIT compatibility, we use jnp.where with a sentinel value
+    if override_r_avoid is not None and override_r_avoid > 0:
+        return override_r_avoid
+    return computed
+
 
 def compute_prior_policy(
     positions: jnp.ndarray,
@@ -648,7 +696,9 @@ def compute_prior_policy(
     """Compute rule-based prior policy for all agents (matches C++ MARL).
     
     Three-component Reynolds-style flocking policy:
-    1. Attraction: Move toward nearest target cell (goal-seeking)
+    1. Attraction: Move toward nearest AVAILABLE target cell (goal-seeking)
+       - A cell is "available" to agent i if agent i is closest to it, 
+         OR no agent is within the in_target threshold
     2. Repulsion: Avoid nearby agents within r_avoid (separation)
     3. Synchronization: Match velocity with neighbors (alignment)
     
@@ -656,27 +706,63 @@ def compute_prior_policy(
         - attraction_strength: 2.0
         - repulsion_strength: 3.0 
         - sync_strength: 2.0
+        
+    Key difference from naive implementation:
+        - Uses dynamic r_avoid based on shape size
+        - Agents attract to unoccupied cells, preventing clustering
     """
     n_agents = positions.shape[0]
+    n_grid = grid_centers.shape[0]
+    
+    # Precompute distances from all agents to all grid cells: (n_agents, n_grid)
+    agent_to_grid = grid_centers[None, :, :] - positions[:, None, :]  # (n_agents, n_grid, 2)
+    dist_to_grid = jnp.linalg.norm(agent_to_grid, axis=-1)  # (n_agents, n_grid)
+    
+    # Set invalid cells to large distance
+    dist_to_grid = jnp.where(grid_mask[None, :], dist_to_grid, 1e10)
+    
+    # In-target threshold
+    in_target_threshold = jnp.sqrt(2.0) * l_cell / 2.0
+    
+    # Which agent is closest to each cell? (n_grid,)
+    closest_agent_per_cell = jnp.argmin(dist_to_grid, axis=0)
+    
+    # Is any agent within in_target threshold of each cell? (n_grid,)
+    min_dist_per_cell = jnp.min(dist_to_grid, axis=0)
+    cell_is_occupied = min_dist_per_cell < in_target_threshold
+    
+    # For each agent, which cells are "available"?
+    # A cell is available if: (agent is closest) OR (no one is in it)
+    agent_indices = jnp.arange(n_agents)[:, None]  # (n_agents, 1)
+    agent_is_closest = agent_indices == closest_agent_per_cell[None, :]  # (n_agents, n_grid)
+    cell_available = agent_is_closest | ~cell_is_occupied[None, :]  # (n_agents, n_grid)
+    cell_available = cell_available & grid_mask[None, :]  # Must be valid cell
+    
+    # Distance to available cells (unavailable = inf)
+    dist_to_available = jnp.where(cell_available, dist_to_grid, 1e10)  # (n_agents, n_grid)
+    
+    # Nearest available cell for each agent
+    nearest_available_idx = jnp.argmin(dist_to_available, axis=1)  # (n_agents,)
+    nearest_available_dist = jnp.min(dist_to_available, axis=1)  # (n_agents,)
+    
+    # Target positions for each agent
+    target_positions = grid_centers[nearest_available_idx]  # (n_agents, 2)
     
     def single_agent_policy(agent_idx: int) -> jnp.ndarray:
         pos = positions[agent_idx]
         vel = velocities[agent_idx]
         
-        # 1. Attraction to nearest target
-        rel_to_grid = grid_centers - pos
-        dist_to_grid = jnp.linalg.norm(rel_to_grid, axis=-1)
-        dist_to_grid = jnp.where(grid_mask, dist_to_grid, 1e10)
-        
-        nearest_idx = jnp.argmin(dist_to_grid)
-        nearest_dist = dist_to_grid[nearest_idx]
-        target_pos = grid_centers[nearest_idx]
+        # 1. Attraction to nearest AVAILABLE target cell (precomputed)
+        target_pos = target_positions[agent_idx]
+        target_dist = nearest_available_dist[agent_idx]
         
         direction_to_target = target_pos - pos
-        dist_to_target = jnp.maximum(nearest_dist, 1e-8)
+        dist_to_target = jnp.maximum(target_dist, 1e-8)
         attraction_force = attraction_strength * direction_to_target / dist_to_target
         
-        in_target = nearest_dist < jnp.sqrt(2.0) * l_cell / 2.0
+        # If already in target cell (close enough), reduce attraction
+        # This happens naturally as dist_to_target approaches 0
+        in_target = target_dist < in_target_threshold
         attraction_force = jnp.where(in_target, jnp.zeros(2), attraction_force)
         
         # 2. Repulsion from nearby agents

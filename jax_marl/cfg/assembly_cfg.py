@@ -23,9 +23,15 @@ class AssemblyTrainConfig(NamedTuple):
     n_agents: int = 30                  # Number of agents in swarm
     n_parallel_envs: int = 4            # Number of parallel environments (JAX vmap)
     arena_size: float = 5.0             # Square arena size
-    agent_radius: float = 0.1           # Agent collision radius
+    agent_radius: float = 0.035         # Agent collision radius (matches MARL-LLM)
     max_velocity: float = 0.8           # Max agent speed
     max_acceleration: float = 1.0       # Max acceleration (action scale)
+    
+    # Prior policy parameters
+    # r_avoid is computed dynamically: sqrt(4*n_grid/(n_agents*pi)) * l_cell
+    # But we need a default for when shape info isn't available yet
+    # Set to None to auto-compute, or override with a fixed value
+    r_avoid: Optional[float] = None     # Repulsion radius for prior policy (None = auto-compute)
     
     # Observation
     k_neighbors: int = 6                # Number of nearest neighbors to observe
@@ -217,7 +223,8 @@ config = AssemblyTrainConfig(
     n_agents=20,
     n_parallel_envs=8,
     arena_size=5.0,
-    agent_radius=0.1,
+    agent_radius=0.035,             # Matches MARL-LLM original
+    r_avoid=None,                   # Auto-compute based on shape (or set fixed e.g. 0.4)
     max_velocity=0.8,
     max_acceleration=1.0,
     # Observation
@@ -388,9 +395,11 @@ def config_to_assembly_params(config: AssemblyTrainConfig):
         vel_max=config.max_velocity,
     )
     
+    # collision_threshold is for reward collision detection (2x agent radius)
+    # r_avoid for prior policy is separate and larger (computed dynamically or from config)
     reward_params = RewardParams(
         reward_mode=config.reward_mode,
-        collision_threshold=config.agent_radius * 2,
+        collision_threshold=config.agent_radius * 2,  # For reward collision detection
     )
     
     physics_params = PhysicsParams(
@@ -415,5 +424,6 @@ def config_to_assembly_params(config: AssemblyTrainConfig):
         randomize_rotation=config.randomize_rotation,
         randomize_scale=config.randomize_scale,
         randomize_offset=config.randomize_offset,
+        r_avoid=config.r_avoid,  # Pass r_avoid for prior policy (None = auto-compute)
         reward_mode=config.reward_mode,
     )
