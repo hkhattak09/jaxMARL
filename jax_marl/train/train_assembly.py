@@ -936,7 +936,8 @@ def train(
                     f"  [EVAL] Episode {episode} | "
                     f"Reward: {eval_metrics['eval_reward_mean']:7.3f} | "
                     f"Coverage: {eval_metrics['eval_coverage']:.3f} | "
-                    f"Final Coverage: {eval_metrics['eval_final_coverage']:.3f}"
+                    f"DistUnif: {eval_metrics['eval_distribution_uniformity']:.3f} | "
+                    f"VoronoiUnif: {eval_metrics['eval_voronoi_uniformity']:.3f}"
                 )
             
             # Log eval metrics

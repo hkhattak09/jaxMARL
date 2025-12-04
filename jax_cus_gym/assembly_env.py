@@ -461,8 +461,11 @@ class AssemblySwarmEnv(MultiAgentEnv):
         # Compute coverage as fraction of valid grid cells that are occupied
         # (matches MARL wrapper: grid-centric coverage over target shape only).
         # A grid cell is "occupied" if ANY agent is within r_avoid/2 of it.
+        # r_avoid is computed using MARL formula: sqrt(4 * n_grid / (n_agents * pi)) * l_cell
         # Only count valid cells (within target shape) - MARL only stores valid cells.
-        r_avoid = params.reward_params.collision_threshold
+        r_avoid = compute_r_avoid(
+            new_state.grid_mask, self.n_agents, new_state.l_cell, params.r_avoid
+        )
         agent_to_grid = new_state.grid_centers[None, :, :] - new_state.positions[:, None, :]
         agent_to_grid_dist = jnp.linalg.norm(agent_to_grid, axis=-1)  # (n_agents, n_grid)
         occupied_by_any = jnp.any(agent_to_grid_dist < r_avoid / 2.0, axis=0)  # (n_grid,)
@@ -520,15 +523,14 @@ class AssemblySwarmEnv(MultiAgentEnv):
         # Minimum distance for each agent to its nearest neighbor
         min_dists = jnp.min(pairwise_dist, axis=1)  # (n_agents,)
         
-        # Calculate normalized variance of minimum distances
-        # metric = (var - min) / (max - min)
-        var_min_dist = jnp.var(min_dists)
-        min_val = jnp.min(min_dists)
-        max_val = jnp.max(min_dists)
-        denom = max_val - min_val
-        
-        # Guard against division by zero (all agents equidistant)
-        uniformity = jnp.where(denom > 1e-8, (var_min_dist - min_val) / denom, 0.0)
+        # Use coefficient of variation (std/mean) as uniformity metric
+        # Lower values = more uniform distribution
+        # Clamp to [0, 1] for interpretability
+        mean_dist = jnp.mean(min_dists)
+        std_dist = jnp.std(min_dists)
+        cv = jnp.where(mean_dist > 1e-8, std_dist / mean_dist, 0.0)
+        # Clamp to reasonable range
+        uniformity = jnp.clip(cv, 0.0, 1.0)
         return uniformity
     
     def _compute_voronoi_uniformity(
@@ -568,15 +570,14 @@ class AssemblySwarmEnv(MultiAgentEnv):
         valid_assignments = cell_assignments & grid_mask[:, None]
         cells_per_agent = jnp.sum(valid_assignments, axis=0).astype(jnp.float32)  # (n_agents,)
         
-        # Calculate normalized variance
-        # metric = (var - min) / (max - min)
-        var_cells = jnp.var(cells_per_agent)
-        min_val = jnp.min(cells_per_agent)
-        max_val = jnp.max(cells_per_agent)
-        denom = max_val - min_val
-        
-        # Guard against division by zero
-        uniformity = jnp.where(denom > 1e-8, (var_cells - min_val) / denom, 0.0)
+        # Use coefficient of variation (std/mean) as uniformity metric
+        # Lower values = more uniform distribution of cells per agent
+        # Clamp to [0, 1] for interpretability
+        mean_cells = jnp.mean(cells_per_agent)
+        std_cells = jnp.std(cells_per_agent)
+        cv = jnp.where(mean_cells > 1e-8, std_cells / mean_cells, 0.0)
+        # Clamp to reasonable range
+        uniformity = jnp.clip(cv, 0.0, 1.0)
         return uniformity
     
     def _update_occupancy(
