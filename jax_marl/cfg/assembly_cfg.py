@@ -229,7 +229,7 @@ config = AssemblyTrainConfig(
     max_acceleration=1.0,
     # Observation
     k_neighbors=6,
-    d_sen=3.0,
+    d_sen=0.4,
     include_self_state=True,
     # Physics
     dt=0.1,
@@ -262,7 +262,7 @@ config = AssemblyTrainConfig(
     n_episodes=3000,
     log_interval=10,
     save_interval=100,
-    eval_interval=200,
+    eval_interval=300,
     # Paths
     shape_file=None,
     checkpoint_dir=None,

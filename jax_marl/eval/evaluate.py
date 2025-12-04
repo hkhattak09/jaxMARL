@@ -402,10 +402,9 @@ def run_eval_episode_for_shape(
     
     metrics = {
         "episode_reward": episode_reward,
-        "mean_coverage": np.mean(coverages),
         "final_coverage": coverages[-1] if coverages else 0.0,
-        "distribution_uniformity": np.mean(dist_uniformities),
-        "voronoi_uniformity": np.mean(voronoi_uniformities),
+        "distribution_uniformity": dist_uniformities[-1] if dist_uniformities else 0.0,
+        "voronoi_uniformity": voronoi_uniformities[-1] if voronoi_uniformities else 0.0,
         "collision_rate": np.mean(collisions),
         "n_steps": step + 1,
     }
@@ -456,7 +455,7 @@ def evaluate_single_shape(
         )
         
         episode_rewards.append(metrics["episode_reward"])
-        episode_coverages.append(metrics["mean_coverage"])
+        episode_coverages.append(metrics["final_coverage"])  # Final state coverage
         episode_final_coverages.append(metrics["final_coverage"])
         episode_distribution_uniformities.append(metrics["distribution_uniformity"])
         episode_voronoi_uniformities.append(metrics["voronoi_uniformity"])

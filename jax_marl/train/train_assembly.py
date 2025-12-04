@@ -216,10 +216,11 @@ class RolloutCarry:
     env_states: AssemblyState  # Batched environment states
     maddpg_state: MADDPGState  # Algorithm state with buffer
     episode_rewards: jax.Array  # (n_envs,)
-    total_coverage: jax.Array  # scalar
-    total_collision: jax.Array  # scalar
-    total_distribution_uniformity: jax.Array  # scalar
-    total_voronoi_uniformity: jax.Array  # scalar
+    total_collision: jax.Array  # scalar - accumulated for averaging
+    # Final state metrics (only the last step matters)
+    final_coverage: jax.Array  # scalar - from final state
+    final_distribution_uniformity: jax.Array  # scalar - from final state
+    final_voronoi_uniformity: jax.Array  # scalar - from final state
     done_flag: jax.Array  # bool scalar - whether all envs are done
 
 
@@ -323,16 +324,17 @@ def create_jit_rollout_fn(
         all_done = jnp.all(dones_batch[:, 0])
         
         # Create new carry
+        # For coverage/uniformity, we always store the latest value (final state matters)
         new_carry = RolloutCarry(
             key=key,
             obs_batch=next_obs_batch,
             env_states=new_env_states,
             maddpg_state=new_maddpg_state,
             episode_rewards=carry.episode_rewards + step_reward,
-            total_coverage=carry.total_coverage + step_coverage,
             total_collision=carry.total_collision + step_collision,
-            total_distribution_uniformity=carry.total_distribution_uniformity + step_dist_uniformity,
-            total_voronoi_uniformity=carry.total_voronoi_uniformity + step_voronoi_uniformity,
+            final_coverage=step_coverage,  # Overwrite with latest
+            final_distribution_uniformity=step_dist_uniformity,  # Overwrite with latest
+            final_voronoi_uniformity=step_voronoi_uniformity,  # Overwrite with latest
             done_flag=carry.done_flag | all_done,
         )
         
@@ -372,10 +374,10 @@ def create_jit_rollout_fn(
             env_states=env_states,
             maddpg_state=maddpg_state,
             episode_rewards=jnp.zeros(n_envs),
-            total_coverage=jnp.array(0.0),
             total_collision=jnp.array(0.0),
-            total_distribution_uniformity=jnp.array(0.0),
-            total_voronoi_uniformity=jnp.array(0.0),
+            final_coverage=jnp.array(0.0),
+            final_distribution_uniformity=jnp.array(0.0),
+            final_voronoi_uniformity=jnp.array(0.0),
             done_flag=jnp.array(False),
         )
         
@@ -443,19 +445,19 @@ def run_episode(
         maddpg_state = final_carry.maddpg_state
         env_states = final_carry.env_states
         episode_rewards = final_carry.episode_rewards
-        total_coverage = final_carry.total_coverage
+        final_coverage = final_carry.final_coverage
         total_collision = final_carry.total_collision
-        total_distribution_uniformity = final_carry.total_distribution_uniformity
-        total_voronoi_uniformity = final_carry.total_voronoi_uniformity
+        final_distribution_uniformity = final_carry.final_distribution_uniformity
+        final_voronoi_uniformity = final_carry.final_voronoi_uniformity
         num_steps = config.max_steps  # Always runs full episode with scan
         
     else:
         # Fallback to Python loop (slower but useful for debugging)
         episode_rewards = jnp.zeros(n_envs)
-        total_coverage = jnp.array(0.0)
+        final_coverage = jnp.array(0.0)
         total_collision = jnp.array(0.0)
-        total_distribution_uniformity = jnp.array(0.0)
-        total_voronoi_uniformity = jnp.array(0.0)
+        final_distribution_uniformity = jnp.array(0.0)
+        final_voronoi_uniformity = jnp.array(0.0)
         num_steps = 0
         
         for step in range(config.max_steps):
@@ -503,10 +505,11 @@ def run_episode(
             
             obs_batch = next_obs_batch
             episode_rewards = episode_rewards + jnp.mean(rewards_batch, axis=1)
-            total_coverage = total_coverage + jnp.mean(info_batch["coverage_rate"])
             total_collision = total_collision + jnp.mean(env_states.is_colliding)
-            total_distribution_uniformity = total_distribution_uniformity + jnp.mean(info_batch["distribution_uniformity"])
-            total_voronoi_uniformity = total_voronoi_uniformity + jnp.mean(info_batch["voronoi_uniformity"])
+            # Track final state values (overwrite each step)
+            final_coverage = jnp.mean(info_batch["coverage_rate"])
+            final_distribution_uniformity = jnp.mean(info_batch["distribution_uniformity"])
+            final_voronoi_uniformity = jnp.mean(info_batch["voronoi_uniformity"])
             num_steps = step + 1
             
             if jnp.all(dones_batch[:, 0]):
@@ -540,10 +543,10 @@ def run_episode(
         "episode_reward": mean_episode_reward,
         "episode_reward_mean": mean_episode_reward / num_steps if num_steps > 0 else 0.0,
         "episode_reward_std": 0.0,
-        "coverage_rate": float(total_coverage) / num_steps if num_steps > 0 else 0.0,
+        "coverage_rate": float(final_coverage),  # Final state only
         "collision_rate": float(total_collision) / num_steps if num_steps > 0 else 0.0,
-        "distribution_uniformity": float(total_distribution_uniformity) / num_steps if num_steps > 0 else 0.0,
-        "voronoi_uniformity": float(total_voronoi_uniformity) / num_steps if num_steps > 0 else 0.0,
+        "distribution_uniformity": float(final_distribution_uniformity),  # Final state only
+        "voronoi_uniformity": float(final_voronoi_uniformity),  # Final state only
         "step_time": step_time,
         "noise_scale": float(maddpg_state.noise_scale),
         "steps_in_episode": num_steps,
@@ -632,11 +635,10 @@ def run_eval_episode(
     metrics = {
         "eval_reward": episode_reward,
         "eval_reward_mean": episode_reward / num_steps if num_steps > 0 else 0.0,
-        "eval_coverage": np.mean(coverages),
-        "eval_distribution_uniformity": np.mean(dist_uniformities),
-        "eval_voronoi_uniformity": np.mean(voronoi_uniformities),
+        "eval_coverage": coverages[-1] if coverages else 0.0,  # Final state only
+        "eval_distribution_uniformity": dist_uniformities[-1] if dist_uniformities else 0.0,  # Final state only
+        "eval_voronoi_uniformity": voronoi_uniformities[-1] if voronoi_uniformities else 0.0,  # Final state only
         "eval_collision": np.mean(collisions),
-        "eval_final_coverage": coverages[-1] if coverages else 0.0,
         "eval_steps": num_steps,
     }
     
