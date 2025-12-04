@@ -458,11 +458,18 @@ class AssemblySwarmEnv(MultiAgentEnv):
         
         dones = jnp.full((self.n_agents,), done)
         
+        # Compute coverage as fraction of VALID grid cells that are occupied
+        # (matches MARL wrapper: grid-centric coverage).
+        # Use JAX ops and guard against division-by-zero for JIT compatibility.
+        n_valid_cells = jnp.sum(new_state.grid_mask).astype(jnp.float32)
+        n_occupied_cells = jnp.sum(new_state.occupied_mask).astype(jnp.float32)
+        coverage_rate = jnp.where(n_valid_cells > 0.0, n_occupied_cells / n_valid_cells, 0.0)
+
         info = {
             "time": new_time,
             "in_target": new_state.in_target,
             "is_colliding": new_state.is_colliding,
-            "coverage_rate": jnp.mean(new_state.in_target.astype(jnp.float32)),
+            "coverage_rate": coverage_rate,
             "shape_idx": state.shape_idx,
             "occupied_count": jnp.sum(new_state.occupied_mask),
         }
