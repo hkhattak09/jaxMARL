@@ -103,6 +103,10 @@ class ShapeResult:
     std_coverage: float
     mean_final_coverage: float
     std_final_coverage: float
+    mean_distribution_uniformity: float
+    std_distribution_uniformity: float
+    mean_voronoi_uniformity: float
+    std_voronoi_uniformity: float
     mean_collision_rate: float
     std_collision_rate: float
     mean_steps: float
@@ -111,6 +115,8 @@ class ShapeResult:
     episode_rewards: List[float] = field(default_factory=list)
     episode_coverages: List[float] = field(default_factory=list)
     episode_final_coverages: List[float] = field(default_factory=list)
+    episode_distribution_uniformities: List[float] = field(default_factory=list)
+    episode_voronoi_uniformities: List[float] = field(default_factory=list)
     episode_collision_rates: List[float] = field(default_factory=list)
     episode_steps: List[int] = field(default_factory=list)
 
@@ -127,6 +133,8 @@ class EvalResult:
     overall_mean_reward: float
     overall_mean_coverage: float
     overall_mean_final_coverage: float
+    overall_mean_distribution_uniformity: float
+    overall_mean_voronoi_uniformity: float
     overall_mean_collision_rate: float
     
     # Per-shape results
@@ -352,6 +360,10 @@ def run_eval_episode_for_shape(
     step_rewards = []
     coverages = []
     collisions = []
+    dist_uniformities = []
+    voronoi_uniformities = []
+    dist_uniformities = []
+    voronoi_uniformities = []
     
     for step in range(params.max_steps):
         key, action_key, step_key = random.split(key, 3)
@@ -382,6 +394,8 @@ def run_eval_episode_for_shape(
         step_rewards.append(step_reward)
         coverages.append(float(info["coverage_rate"]))
         collisions.append(float(jnp.mean(env_state.is_colliding)))
+        dist_uniformities.append(float(info["distribution_uniformity"]))
+        voronoi_uniformities.append(float(info["voronoi_uniformity"]))
         
         if dones[0]:
             break
@@ -390,6 +404,8 @@ def run_eval_episode_for_shape(
         "episode_reward": episode_reward,
         "mean_coverage": np.mean(coverages),
         "final_coverage": coverages[-1] if coverages else 0.0,
+        "distribution_uniformity": np.mean(dist_uniformities),
+        "voronoi_uniformity": np.mean(voronoi_uniformities),
         "collision_rate": np.mean(collisions),
         "n_steps": step + 1,
     }
@@ -425,6 +441,8 @@ def evaluate_single_shape(
     episode_rewards = []
     episode_coverages = []
     episode_final_coverages = []
+    episode_distribution_uniformities = []
+    episode_voronoi_uniformities = []
     episode_collision_rates = []
     episode_steps = []
     
@@ -440,6 +458,8 @@ def evaluate_single_shape(
         episode_rewards.append(metrics["episode_reward"])
         episode_coverages.append(metrics["mean_coverage"])
         episode_final_coverages.append(metrics["final_coverage"])
+        episode_distribution_uniformities.append(metrics["distribution_uniformity"])
+        episode_voronoi_uniformities.append(metrics["voronoi_uniformity"])
         episode_collision_rates.append(metrics["collision_rate"])
         episode_steps.append(metrics["n_steps"])
         
@@ -467,12 +487,18 @@ def evaluate_single_shape(
         std_coverage=float(np.std(episode_coverages)),
         mean_final_coverage=float(np.mean(episode_final_coverages)),
         std_final_coverage=float(np.std(episode_final_coverages)),
+        mean_distribution_uniformity=float(np.mean(episode_distribution_uniformities)),
+        std_distribution_uniformity=float(np.std(episode_distribution_uniformities)),
+        mean_voronoi_uniformity=float(np.mean(episode_voronoi_uniformities)),
+        std_voronoi_uniformity=float(np.std(episode_voronoi_uniformities)),
         mean_collision_rate=float(np.mean(episode_collision_rates)),
         std_collision_rate=float(np.std(episode_collision_rates)),
         mean_steps=float(np.mean(episode_steps)),
         episode_rewards=episode_rewards,
         episode_coverages=episode_coverages,
         episode_final_coverages=episode_final_coverages,
+        episode_distribution_uniformities=episode_distribution_uniformities,
+        episode_voronoi_uniformities=episode_voronoi_uniformities,
         episode_collision_rates=episode_collision_rates,
         episode_steps=episode_steps,
     )
@@ -575,6 +601,8 @@ def evaluate_on_all_shapes(eval_config: EvalConfig) -> EvalResult:
     overall_mean_reward = float(np.mean([r.mean_reward for r in shape_results]))
     overall_mean_coverage = float(np.mean([r.mean_coverage for r in shape_results]))
     overall_mean_final_coverage = float(np.mean([r.mean_final_coverage for r in shape_results]))
+    overall_mean_distribution_uniformity = float(np.mean([r.mean_distribution_uniformity for r in shape_results]))
+    overall_mean_voronoi_uniformity = float(np.mean([r.mean_voronoi_uniformity for r in shape_results]))
     overall_mean_collision_rate = float(np.mean([r.mean_collision_rate for r in shape_results]))
     
     # Create result
@@ -586,6 +614,8 @@ def evaluate_on_all_shapes(eval_config: EvalConfig) -> EvalResult:
         overall_mean_reward=overall_mean_reward,
         overall_mean_coverage=overall_mean_coverage,
         overall_mean_final_coverage=overall_mean_final_coverage,
+        overall_mean_distribution_uniformity=overall_mean_distribution_uniformity,
+        overall_mean_voronoi_uniformity=overall_mean_voronoi_uniformity,
         overall_mean_collision_rate=overall_mean_collision_rate,
         shape_results=shape_results,
         config=config._asdict(),
@@ -598,10 +628,12 @@ def evaluate_on_all_shapes(eval_config: EvalConfig) -> EvalResult:
         print(f"=" * 60)
         print(f"Overall Results (averaged across {n_shapes} shapes):")
         print(f"=" * 60)
-        print(f"  Mean Reward:        {overall_mean_reward:.2f}")
-        print(f"  Mean Coverage:      {overall_mean_coverage:.2%}")
-        print(f"  Mean Final Coverage:{overall_mean_final_coverage:.2%}")
-        print(f"  Mean Collision Rate:{overall_mean_collision_rate:.2%}")
+        print(f"  Mean Reward:             {overall_mean_reward:.2f}")
+        print(f"  Mean Coverage:           {overall_mean_coverage:.2%}")
+        print(f"  Mean Final Coverage:     {overall_mean_final_coverage:.2%}")
+        print(f"  Distribution Uniformity: {overall_mean_distribution_uniformity:.4f}")
+        print(f"  Voronoi Uniformity:      {overall_mean_voronoi_uniformity:.4f}")
+        print(f"  Mean Collision Rate:     {overall_mean_collision_rate:.2%}")
         print()
         print(f"Results saved to: {output_dir}")
     

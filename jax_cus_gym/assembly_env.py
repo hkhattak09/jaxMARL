@@ -458,23 +458,126 @@ class AssemblySwarmEnv(MultiAgentEnv):
         
         dones = jnp.full((self.n_agents,), done)
         
-        # Compute coverage as fraction of VALID grid cells that are occupied
-        # (matches MARL wrapper: grid-centric coverage).
-        # Use JAX ops and guard against division-by-zero for JIT compatibility.
+        # Compute coverage as fraction of valid grid cells that are occupied
+        # (matches MARL wrapper: grid-centric coverage over target shape only).
+        # A grid cell is "occupied" if ANY agent is within r_avoid/2 of it.
+        # Only count valid cells (within target shape) - MARL only stores valid cells.
+        r_avoid = params.reward_params.collision_threshold
+        agent_to_grid = new_state.grid_centers[None, :, :] - new_state.positions[:, None, :]
+        agent_to_grid_dist = jnp.linalg.norm(agent_to_grid, axis=-1)  # (n_agents, n_grid)
+        occupied_by_any = jnp.any(agent_to_grid_dist < r_avoid / 2.0, axis=0)  # (n_grid,)
+        # Only count occupied cells that are valid (in the target shape)
+        occupied_and_valid = occupied_by_any & new_state.grid_mask
         n_valid_cells = jnp.sum(new_state.grid_mask).astype(jnp.float32)
-        n_occupied_cells = jnp.sum(new_state.occupied_mask).astype(jnp.float32)
+        n_occupied_cells = jnp.sum(occupied_and_valid).astype(jnp.float32)
         coverage_rate = jnp.where(n_valid_cells > 0.0, n_occupied_cells / n_valid_cells, 0.0)
+        
+        # Compute distribution uniformity (matches MARL wrapper)
+        # Based on variance of minimum inter-agent distances
+        distribution_uniformity = self._compute_distribution_uniformity(new_state.positions)
+        
+        # Compute Voronoi-based uniformity (matches MARL wrapper)
+        # Based on variance of grid cells assigned to each agent
+        voronoi_uniformity = self._compute_voronoi_uniformity(
+            new_state.positions, new_state.grid_centers, new_state.grid_mask
+        )
 
         info = {
             "time": new_time,
             "in_target": new_state.in_target,
             "is_colliding": new_state.is_colliding,
             "coverage_rate": coverage_rate,
+            "distribution_uniformity": distribution_uniformity,
+            "voronoi_uniformity": voronoi_uniformity,
             "shape_idx": state.shape_idx,
             "occupied_count": jnp.sum(new_state.occupied_mask),
         }
         
         return obs, new_state, rewards, dones, info
+    
+    def _compute_distribution_uniformity(self, positions: jnp.ndarray) -> jnp.ndarray:
+        """Compute distribution uniformity based on minimum inter-agent distances.
+        
+        Matches MARL wrapper's distribution_uniformity() method.
+        Measures how uniformly agents are distributed by analyzing variance
+        in minimum distances between agents.
+        
+        Args:
+            positions: Agent positions (n_agents, 2)
+            
+        Returns:
+            Normalized uniformity metric (0 to 1), lower is more uniform
+        """
+        n_agents = positions.shape[0]
+        
+        # Compute pairwise distances: (n_agents, n_agents)
+        diff = positions[:, None, :] - positions[None, :, :]  # (n_agents, n_agents, 2)
+        pairwise_dist = jnp.linalg.norm(diff, axis=-1)  # (n_agents, n_agents)
+        
+        # Set diagonal to inf so we don't pick self-distance as minimum
+        pairwise_dist = pairwise_dist + jnp.eye(n_agents) * 1e10
+        
+        # Minimum distance for each agent to its nearest neighbor
+        min_dists = jnp.min(pairwise_dist, axis=1)  # (n_agents,)
+        
+        # Calculate normalized variance of minimum distances
+        # metric = (var - min) / (max - min)
+        var_min_dist = jnp.var(min_dists)
+        min_val = jnp.min(min_dists)
+        max_val = jnp.max(min_dists)
+        denom = max_val - min_val
+        
+        # Guard against division by zero (all agents equidistant)
+        uniformity = jnp.where(denom > 1e-8, (var_min_dist - min_val) / denom, 0.0)
+        return uniformity
+    
+    def _compute_voronoi_uniformity(
+        self,
+        positions: jnp.ndarray,
+        grid_centers: jnp.ndarray,
+        grid_mask: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """Compute Voronoi-based uniformity.
+        
+        Matches MARL wrapper's voronoi_based_uniformity() method.
+        Assigns each valid grid cell to the nearest agent and measures uniformity
+        based on variance in number of cells per agent.
+        
+        Args:
+            positions: Agent positions (n_agents, 2)
+            grid_centers: Grid cell centers (n_grid, 2)
+            grid_mask: Valid grid cells mask (n_grid,)
+            
+        Returns:
+            Normalized Voronoi uniformity metric (0 to 1), lower is more uniform
+        """
+        n_agents = positions.shape[0]
+        
+        # Distance from each grid cell to each agent: (n_grid, n_agents)
+        grid_to_agent = positions[None, :, :] - grid_centers[:, None, :]  # (n_grid, n_agents, 2)
+        dist_to_agents = jnp.linalg.norm(grid_to_agent, axis=-1)  # (n_grid, n_agents)
+        
+        # Find nearest agent for each grid cell
+        nearest_agent = jnp.argmin(dist_to_agents, axis=1)  # (n_grid,)
+        
+        # Count cells assigned to each agent (only valid cells)
+        # Use one-hot encoding and sum
+        agent_indices = jnp.arange(n_agents)
+        cell_assignments = (nearest_agent[:, None] == agent_indices[None, :])  # (n_grid, n_agents)
+        # Mask out invalid cells
+        valid_assignments = cell_assignments & grid_mask[:, None]
+        cells_per_agent = jnp.sum(valid_assignments, axis=0).astype(jnp.float32)  # (n_agents,)
+        
+        # Calculate normalized variance
+        # metric = (var - min) / (max - min)
+        var_cells = jnp.var(cells_per_agent)
+        min_val = jnp.min(cells_per_agent)
+        max_val = jnp.max(cells_per_agent)
+        denom = max_val - min_val
+        
+        # Guard against division by zero
+        uniformity = jnp.where(denom > 1e-8, (var_cells - min_val) / denom, 0.0)
+        return uniformity
     
     def _update_occupancy(
         self,

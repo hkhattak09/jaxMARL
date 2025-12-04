@@ -1,0 +1,368 @@
+Training with 20 agents, 8 parallel envs
+============================================================
+  JAX MADDPG Training - Assembly Swarm
+============================================================
+Agents: 20
+Parallel environments: 8
+Episodes: 3000
+Prior weight: 0.5
+Batch size: 2048
+Checkpoint dir: /content/jaxMARL/jax_marl/checkpoints/assembly/2025-12-03_02-27-40
+Log dir: /content/jaxMARL/jax_marl/logs/assembly/2025-12-03_02-27-40
+Eval dir: /content/jaxMARL/jax_marl/eval_videos/assembly/2025-12-03_02-27-40
+Eval interval: every 200 episodes
+============================================================
+W1203 02:27:41.166123   18114 cuda_executor.cc:1802] GPU interconnect information not available: INTERNAL: NVML doesn't support extracting fabric info or NVLink is not used by the device.
+W1203 02:27:41.168250   18071 cuda_executor.cc:1802] GPU interconnect information not available: INTERNAL: NVML doesn't support extracting fabric info or NVLink is not used by the device.
+Loading shapes from: /content/jaxMARL/fig/results.pkl
+Loaded 7 shapes
+Environment: 20 agents, obs_dim=192, action_dim=2
+Parallel environments: 8
+Creating JIT-compiled rollout function...
+JIT rollout function created (will compile on first use)
+Creating JIT-compiled training step...
+JIT training step created (will compile on first use)
+
+Training started...
+Episode     0/3000 | Reward:   7.525 | Coverage: 0.079 | Collisions: 0.011 | Noise: 0.900 | Buffer:   1600 | Step: 23.59s | Train: 111.08s | Elapsed: 2m 14.9s
+Episode    10/3000 | Reward:   9.131 | Coverage: 0.102 | Collisions: 0.013 | Noise: 0.897 | Buffer:  17600 | Step: 0.04s | Train: 0.06s | Elapsed: 2m 39.0s
+Episode    20/3000 | Reward:   8.113 | Coverage: 0.079 | Collisions: 0.012 | Noise: 0.894 | Buffer:  33600 | Step: 0.04s | Train: 0.06s | Elapsed: 2m 41.0s
+Episode    30/3000 | Reward:   7.619 | Coverage: 0.081 | Collisions: 0.010 | Noise: 0.891 | Buffer:  49600 | Step: 0.04s | Train: 0.06s | Elapsed: 2m 43.0s
+Episode    40/3000 | Reward:  40.463 | Coverage: 0.483 | Collisions: 0.130 | Noise: 0.888 | Buffer:  65600 | Step: 0.04s | Train: 0.85s | Elapsed: 2m 53.2s
+Episode    50/3000 | Reward:  42.500 | Coverage: 0.482 | Collisions: 0.045 | Noise: 0.885 | Buffer:  81600 | Step: 0.04s | Train: 0.85s | Elapsed: 3m 3.1s
+Episode    60/3000 | Reward:  43.469 | Coverage: 0.480 | Collisions: 0.030 | Noise: 0.882 | Buffer:  97600 | Step: 0.04s | Train: 0.85s | Elapsed: 3m 13.1s
+Episode    70/3000 | Reward:  54.738 | Coverage: 0.557 | Collisions: 0.024 | Noise: 0.878 | Buffer: 113600 | Step: 0.04s | Train: 0.85s | Elapsed: 3m 23.1s
+Episode    80/3000 | Reward:  63.912 | Coverage: 0.612 | Collisions: 0.017 | Noise: 0.875 | Buffer: 129600 | Step: 0.04s | Train: 0.85s | Elapsed: 3m 33.2s
+Episode    90/3000 | Reward:  58.013 | Coverage: 0.607 | Collisions: 0.020 | Noise: 0.872 | Buffer: 145600 | Step: 0.04s | Train: 0.86s | Elapsed: 3m 43.2s
+Episode   100/3000 | Reward:  67.325 | Coverage: 0.671 | Collisions: 0.015 | Noise: 0.869 | Buffer: 161600 | Step: 0.04s | Train: 0.85s | Elapsed: 3m 53.2s
+Episode   110/3000 | Reward:  74.544 | Coverage: 0.685 | Collisions: 0.022 | Noise: 0.866 | Buffer: 177600 | Step: 0.04s | Train: 0.86s | Elapsed: 4m 3.5s
+Episode   120/3000 | Reward:  79.500 | Coverage: 0.717 | Collisions: 0.025 | Noise: 0.863 | Buffer: 193600 | Step: 0.04s | Train: 0.86s | Elapsed: 4m 13.5s
+Episode   130/3000 | Reward:  77.631 | Coverage: 0.719 | Collisions: 0.023 | Noise: 0.860 | Buffer: 209600 | Step: 0.04s | Train: 0.86s | Elapsed: 4m 23.5s
+Episode   140/3000 | Reward:  83.500 | Coverage: 0.784 | Collisions: 0.017 | Noise: 0.857 | Buffer: 225600 | Step: 0.04s | Train: 0.85s | Elapsed: 4m 33.8s
+Episode   150/3000 | Reward:  82.556 | Coverage: 0.769 | Collisions: 0.020 | Noise: 0.854 | Buffer: 240000 | Step: 0.04s | Train: 0.85s | Elapsed: 4m 43.8s
+Episode   160/3000 | Reward: 101.788 | Coverage: 0.804 | Collisions: 0.022 | Noise: 0.851 | Buffer: 240000 | Step: 0.04s | Train: 0.86s | Elapsed: 4m 54.1s
+Episode   170/3000 | Reward:  94.200 | Coverage: 0.792 | Collisions: 0.023 | Noise: 0.848 | Buffer: 240000 | Step: 0.04s | Train: 0.85s | Elapsed: 5m 4.1s
+Episode   180/3000 | Reward: 109.300 | Coverage: 0.845 | Collisions: 0.018 | Noise: 0.845 | Buffer: 240000 | Step: 0.04s | Train: 0.85s | Elapsed: 5m 14.2s
+Episode   190/3000 | Reward:  95.956 | Coverage: 0.754 | Collisions: 0.045 | Noise: 0.842 | Buffer: 240000 | Step: 0.05s | Train: 0.86s | Elapsed: 5m 24.3s
+Episode   200/3000 | Reward: 113.863 | Coverage: 0.844 | Collisions: 0.030 | Noise: 0.839 | Buffer: 240000 | Step: 0.04s | Train: 0.85s | Elapsed: 5m 34.3s
+  [EVAL] Episode 200 | Reward: 106.050 | Coverage: 0.941 | Final Coverage: 1.000
+  [EVAL] Saved video: /content/jaxMARL/jax_marl/eval_videos/assembly/2025-12-03_02-27-40/eval_ep200.gif
+Episode   210/3000 | Reward: 118.469 | Coverage: 0.850 | Collisions: 0.028 | Noise: 0.836 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 8m 41.4s
+Episode   220/3000 | Reward: 115.844 | Coverage: 0.843 | Collisions: 0.032 | Noise: 0.833 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 8m 50.6s
+Episode   230/3000 | Reward: 129.775 | Coverage: 0.862 | Collisions: 0.032 | Noise: 0.830 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 9m 0.1s
+Episode   240/3000 | Reward: 120.188 | Coverage: 0.885 | Collisions: 0.038 | Noise: 0.827 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 9m 9.3s
+Episode   250/3000 | Reward: 129.575 | Coverage: 0.874 | Collisions: 0.029 | Noise: 0.824 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 9m 18.6s
+Episode   260/3000 | Reward: 137.931 | Coverage: 0.885 | Collisions: 0.018 | Noise: 0.821 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 9m 27.9s
+Episode   270/3000 | Reward: 117.538 | Coverage: 0.855 | Collisions: 0.040 | Noise: 0.818 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 9m 37.1s
+Episode   280/3000 | Reward: 129.000 | Coverage: 0.874 | Collisions: 0.030 | Noise: 0.815 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 9m 46.6s
+Episode   290/3000 | Reward: 125.650 | Coverage: 0.865 | Collisions: 0.030 | Noise: 0.812 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 9m 55.9s
+Episode   300/3000 | Reward: 136.888 | Coverage: 0.880 | Collisions: 0.023 | Noise: 0.809 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 10m 5.1s
+Episode   310/3000 | Reward: 126.519 | Coverage: 0.869 | Collisions: 0.028 | Noise: 0.806 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 10m 14.4s
+Episode   320/3000 | Reward: 129.394 | Coverage: 0.864 | Collisions: 0.021 | Noise: 0.803 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 10m 23.8s
+Episode   330/3000 | Reward: 131.156 | Coverage: 0.842 | Collisions: 0.022 | Noise: 0.800 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 10m 33.1s
+Episode   340/3000 | Reward: 130.888 | Coverage: 0.869 | Collisions: 0.020 | Noise: 0.797 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 10m 42.3s
+Episode   350/3000 | Reward: 128.613 | Coverage: 0.866 | Collisions: 0.015 | Noise: 0.794 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 10m 51.6s
+Episode   360/3000 | Reward: 128.394 | Coverage: 0.867 | Collisions: 0.018 | Noise: 0.791 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 11m 1.2s
+Episode   370/3000 | Reward: 143.512 | Coverage: 0.867 | Collisions: 0.013 | Noise: 0.788 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 11m 10.4s
+Episode   380/3000 | Reward: 137.069 | Coverage: 0.864 | Collisions: 0.012 | Noise: 0.785 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 11m 19.8s
+Episode   390/3000 | Reward: 131.031 | Coverage: 0.875 | Collisions: 0.012 | Noise: 0.782 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 11m 29.4s
+Episode   400/3000 | Reward: 139.263 | Coverage: 0.847 | Collisions: 0.009 | Noise: 0.778 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 11m 38.7s
+Saved checkpoint: /content/jaxMARL/jax_marl/checkpoints/assembly/2025-12-03_02-27-40/incremental/checkpoint_ep400.pkl
+  [EVAL] Episode 400 | Reward: 149.000 | Coverage: 0.882 | Final Coverage: 0.950
+  [EVAL] Saved video: /content/jaxMARL/jax_marl/eval_videos/assembly/2025-12-03_02-27-40/eval_ep400.gif
+Episode   410/3000 | Reward: 131.163 | Coverage: 0.796 | Collisions: 0.009 | Noise: 0.775 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 14m 33.6s
+Episode   420/3000 | Reward: 136.375 | Coverage: 0.881 | Collisions: 0.008 | Noise: 0.772 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 14m 43.1s
+Episode   430/3000 | Reward: 139.775 | Coverage: 0.871 | Collisions: 0.005 | Noise: 0.769 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 14m 52.4s
+Episode   440/3000 | Reward: 132.350 | Coverage: 0.870 | Collisions: 0.008 | Noise: 0.766 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 15m 1.7s
+Episode   450/3000 | Reward: 126.094 | Coverage: 0.826 | Collisions: 0.006 | Noise: 0.763 | Buffer: 240000 | Step: 0.05s | Train: 0.78s | Elapsed: 15m 11.0s
+Episode   460/3000 | Reward: 135.838 | Coverage: 0.880 | Collisions: 0.006 | Noise: 0.760 | Buffer: 240000 | Step: 0.31s | Train: 0.79s | Elapsed: 15m 20.4s
+Episode   470/3000 | Reward: 142.238 | Coverage: 0.881 | Collisions: 0.003 | Noise: 0.757 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 15m 29.7s
+Episode   480/3000 | Reward: 134.944 | Coverage: 0.884 | Collisions: 0.005 | Noise: 0.754 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 15m 39.0s
+Episode   490/3000 | Reward: 138.469 | Coverage: 0.883 | Collisions: 0.005 | Noise: 0.751 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 15m 48.3s
+Episode   500/3000 | Reward: 142.450 | Coverage: 0.882 | Collisions: 0.004 | Noise: 0.748 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 15m 57.9s
+Episode   510/3000 | Reward: 136.550 | Coverage: 0.882 | Collisions: 0.005 | Noise: 0.745 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 16m 7.2s
+Episode   520/3000 | Reward: 139.819 | Coverage: 0.866 | Collisions: 0.004 | Noise: 0.742 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 16m 16.4s
+Episode   530/3000 | Reward: 130.800 | Coverage: 0.877 | Collisions: 0.005 | Noise: 0.739 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 16m 26.0s
+Episode   540/3000 | Reward: 141.263 | Coverage: 0.882 | Collisions: 0.005 | Noise: 0.736 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 16m 35.3s
+Episode   550/3000 | Reward: 147.362 | Coverage: 0.889 | Collisions: 0.004 | Noise: 0.733 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 16m 44.6s
+Episode   560/3000 | Reward: 143.113 | Coverage: 0.881 | Collisions: 0.005 | Noise: 0.730 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 16m 54.2s
+Episode   570/3000 | Reward: 138.131 | Coverage: 0.886 | Collisions: 0.006 | Noise: 0.727 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 17m 3.5s
+Episode   580/3000 | Reward: 129.487 | Coverage: 0.841 | Collisions: 0.005 | Noise: 0.724 | Buffer: 240000 | Step: 0.05s | Train: 0.79s | Elapsed: 17m 12.8s
+Episode   590/3000 | Reward: 146.287 | Coverage: 0.884 | Collisions: 0.004 | Noise: 0.721 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 17m 22.3s
+Episode   600/3000 | Reward: 146.588 | Coverage: 0.875 | Collisions: 0.004 | Noise: 0.718 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 17m 31.6s
+  [EVAL] Episode 600 | Reward: 153.200 | Coverage: 0.943 | Final Coverage: 1.000
+  [EVAL] Saved video: /content/jaxMARL/jax_marl/eval_videos/assembly/2025-12-03_02-27-40/eval_ep600.gif
+Episode   610/3000 | Reward: 139.700 | Coverage: 0.861 | Collisions: 0.007 | Noise: 0.715 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 20m 25.2s
+Episode   620/3000 | Reward: 134.275 | Coverage: 0.867 | Collisions: 0.005 | Noise: 0.712 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 20m 34.7s
+Episode   630/3000 | Reward: 146.562 | Coverage: 0.866 | Collisions: 0.004 | Noise: 0.709 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 20m 44.1s
+Episode   640/3000 | Reward: 142.725 | Coverage: 0.886 | Collisions: 0.004 | Noise: 0.706 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 20m 53.4s
+Episode   650/3000 | Reward: 144.650 | Coverage: 0.886 | Collisions: 0.003 | Noise: 0.703 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 21m 3.0s
+Episode   660/3000 | Reward: 147.131 | Coverage: 0.873 | Collisions: 0.005 | Noise: 0.700 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 21m 12.3s
+Episode   670/3000 | Reward: 137.719 | Coverage: 0.858 | Collisions: 0.006 | Noise: 0.697 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 21m 21.6s
+Episode   680/3000 | Reward: 144.006 | Coverage: 0.871 | Collisions: 0.006 | Noise: 0.694 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 21m 31.1s
+Episode   690/3000 | Reward: 143.344 | Coverage: 0.907 | Collisions: 0.005 | Noise: 0.691 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 21m 40.4s
+Episode   700/3000 | Reward: 148.437 | Coverage: 0.891 | Collisions: 0.004 | Noise: 0.688 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 21m 49.7s
+Episode   710/3000 | Reward: 134.687 | Coverage: 0.839 | Collisions: 0.006 | Noise: 0.685 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 21m 59.0s
+Episode   720/3000 | Reward: 141.338 | Coverage: 0.890 | Collisions: 0.003 | Noise: 0.682 | Buffer: 240000 | Step: 0.32s | Train: 0.78s | Elapsed: 22m 8.5s
+Episode   730/3000 | Reward: 149.319 | Coverage: 0.874 | Collisions: 0.005 | Noise: 0.678 | Buffer: 240000 | Step: 0.05s | Train: 0.79s | Elapsed: 22m 17.8s
+Episode   740/3000 | Reward: 157.437 | Coverage: 0.890 | Collisions: 0.003 | Noise: 0.675 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 22m 27.1s
+Episode   750/3000 | Reward: 146.975 | Coverage: 0.878 | Collisions: 0.004 | Noise: 0.672 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 22m 36.4s
+Episode   760/3000 | Reward: 148.337 | Coverage: 0.866 | Collisions: 0.005 | Noise: 0.669 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 22m 45.7s
+Episode   770/3000 | Reward: 149.062 | Coverage: 0.902 | Collisions: 0.003 | Noise: 0.666 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 22m 55.2s
+Episode   780/3000 | Reward: 149.625 | Coverage: 0.881 | Collisions: 0.004 | Noise: 0.663 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 23m 4.5s
+Episode   790/3000 | Reward: 164.119 | Coverage: 0.909 | Collisions: 0.001 | Noise: 0.660 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 23m 13.8s
+Episode   800/3000 | Reward: 154.650 | Coverage: 0.905 | Collisions: 0.003 | Noise: 0.657 | Buffer: 240000 | Step: 0.04s | Train: 1.05s | Elapsed: 23m 23.4s
+Saved checkpoint: /content/jaxMARL/jax_marl/checkpoints/assembly/2025-12-03_02-27-40/incremental/checkpoint_ep800.pkl
+  [EVAL] Episode 800 | Reward: 165.750 | Coverage: 0.944 | Final Coverage: 1.000
+  [EVAL] Saved video: /content/jaxMARL/jax_marl/eval_videos/assembly/2025-12-03_02-27-40/eval_ep800.gif
+Episode   810/3000 | Reward: 151.400 | Coverage: 0.868 | Collisions: 0.003 | Noise: 0.654 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 26m 17.7s
+Episode   820/3000 | Reward: 137.244 | Coverage: 0.859 | Collisions: 0.004 | Noise: 0.651 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 26m 27.0s
+Episode   830/3000 | Reward: 154.531 | Coverage: 0.892 | Collisions: 0.003 | Noise: 0.648 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 26m 36.7s
+Episode   840/3000 | Reward: 143.287 | Coverage: 0.896 | Collisions: 0.005 | Noise: 0.645 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 26m 46.0s
+Episode   850/3000 | Reward: 156.387 | Coverage: 0.898 | Collisions: 0.002 | Noise: 0.642 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 26m 55.4s
+Episode   860/3000 | Reward: 148.394 | Coverage: 0.897 | Collisions: 0.004 | Noise: 0.639 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 27m 5.0s
+Episode   870/3000 | Reward: 147.512 | Coverage: 0.885 | Collisions: 0.005 | Noise: 0.636 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 27m 14.4s
+Episode   880/3000 | Reward: 156.100 | Coverage: 0.885 | Collisions: 0.004 | Noise: 0.633 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 27m 23.7s
+Episode   890/3000 | Reward: 145.762 | Coverage: 0.895 | Collisions: 0.003 | Noise: 0.630 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 27m 33.2s
+Episode   900/3000 | Reward: 148.506 | Coverage: 0.897 | Collisions: 0.002 | Noise: 0.627 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 27m 42.5s
+Episode   910/3000 | Reward: 149.306 | Coverage: 0.895 | Collisions: 0.003 | Noise: 0.624 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 27m 51.8s
+Episode   920/3000 | Reward: 143.275 | Coverage: 0.881 | Collisions: 0.004 | Noise: 0.621 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 28m 1.1s
+Episode   930/3000 | Reward: 141.844 | Coverage: 0.897 | Collisions: 0.004 | Noise: 0.618 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 28m 10.6s
+Episode   940/3000 | Reward: 149.306 | Coverage: 0.886 | Collisions: 0.003 | Noise: 0.615 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 28m 19.9s
+Episode   950/3000 | Reward: 151.162 | Coverage: 0.913 | Collisions: 0.003 | Noise: 0.612 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 28m 29.2s
+Episode   960/3000 | Reward: 139.350 | Coverage: 0.877 | Collisions: 0.004 | Noise: 0.609 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 28m 38.5s
+Episode   970/3000 | Reward: 155.800 | Coverage: 0.904 | Collisions: 0.002 | Noise: 0.606 | Buffer: 240000 | Step: 0.32s | Train: 0.78s | Elapsed: 28m 48.0s
+Episode   980/3000 | Reward: 148.225 | Coverage: 0.882 | Collisions: 0.005 | Noise: 0.603 | Buffer: 240000 | Step: 0.05s | Train: 0.79s | Elapsed: 28m 57.4s
+Episode   990/3000 | Reward: 137.075 | Coverage: 0.890 | Collisions: 0.005 | Noise: 0.600 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 29m 6.7s
+Episode  1000/3000 | Reward: 147.444 | Coverage: 0.883 | Collisions: 0.004 | Noise: 0.597 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 29m 16.0s
+  [EVAL] Episode 1000 | Reward: 153.000 | Coverage: 0.934 | Final Coverage: 1.000
+  [EVAL] Saved video: /content/jaxMARL/jax_marl/eval_videos/assembly/2025-12-03_02-27-40/eval_ep1000.gif
+Episode  1010/3000 | Reward: 159.481 | Coverage: 0.899 | Collisions: 0.001 | Noise: 0.594 | Buffer: 240000 | Step: 0.04s | Train: 1.09s | Elapsed: 32m 10.5s
+Episode  1020/3000 | Reward: 148.687 | Coverage: 0.891 | Collisions: 0.003 | Noise: 0.591 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 32m 19.9s
+Episode  1030/3000 | Reward: 150.662 | Coverage: 0.862 | Collisions: 0.004 | Noise: 0.588 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 32m 29.2s
+Episode  1040/3000 | Reward: 154.375 | Coverage: 0.881 | Collisions: 0.004 | Noise: 0.585 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 32m 38.7s
+Episode  1050/3000 | Reward: 158.462 | Coverage: 0.892 | Collisions: 0.002 | Noise: 0.582 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 32m 48.0s
+Episode  1060/3000 | Reward: 153.144 | Coverage: 0.910 | Collisions: 0.004 | Noise: 0.578 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 32m 57.3s
+Episode  1070/3000 | Reward: 163.219 | Coverage: 0.912 | Collisions: 0.002 | Noise: 0.575 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 33m 6.6s
+Episode  1080/3000 | Reward: 153.900 | Coverage: 0.899 | Collisions: 0.004 | Noise: 0.572 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 33m 15.9s
+Episode  1090/3000 | Reward: 155.500 | Coverage: 0.903 | Collisions: 0.003 | Noise: 0.569 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 33m 25.3s
+Episode  1100/3000 | Reward: 158.400 | Coverage: 0.893 | Collisions: 0.002 | Noise: 0.566 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 33m 34.6s
+Episode  1110/3000 | Reward: 149.981 | Coverage: 0.893 | Collisions: 0.005 | Noise: 0.563 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 33m 43.9s
+Episode  1120/3000 | Reward: 153.319 | Coverage: 0.910 | Collisions: 0.004 | Noise: 0.560 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 33m 53.2s
+Episode  1130/3000 | Reward: 154.181 | Coverage: 0.902 | Collisions: 0.003 | Noise: 0.557 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 34m 2.7s
+Episode  1140/3000 | Reward: 156.225 | Coverage: 0.892 | Collisions: 0.003 | Noise: 0.554 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 34m 11.9s
+Episode  1150/3000 | Reward: 151.612 | Coverage: 0.908 | Collisions: 0.004 | Noise: 0.551 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 34m 21.3s
+Episode  1160/3000 | Reward: 160.906 | Coverage: 0.922 | Collisions: 0.002 | Noise: 0.548 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 34m 30.6s
+Episode  1170/3000 | Reward: 151.775 | Coverage: 0.885 | Collisions: 0.003 | Noise: 0.545 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 34m 40.1s
+Episode  1180/3000 | Reward: 153.681 | Coverage: 0.907 | Collisions: 0.003 | Noise: 0.542 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 34m 49.4s
+Episode  1190/3000 | Reward: 155.856 | Coverage: 0.903 | Collisions: 0.003 | Noise: 0.539 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 34m 58.7s
+Episode  1200/3000 | Reward: 151.112 | Coverage: 0.900 | Collisions: 0.003 | Noise: 0.536 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 35m 8.3s
+Saved checkpoint: /content/jaxMARL/jax_marl/checkpoints/assembly/2025-12-03_02-27-40/incremental/checkpoint_ep1200.pkl
+  [EVAL] Episode 1200 | Reward: 179.900 | Coverage: 0.933 | Final Coverage: 1.000
+  [EVAL] Saved video: /content/jaxMARL/jax_marl/eval_videos/assembly/2025-12-03_02-27-40/eval_ep1200.gif
+Episode  1210/3000 | Reward: 153.669 | Coverage: 0.911 | Collisions: 0.004 | Noise: 0.533 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 38m 4.1s
+Episode  1220/3000 | Reward: 160.456 | Coverage: 0.899 | Collisions: 0.003 | Noise: 0.530 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 38m 13.6s
+Episode  1230/3000 | Reward: 148.894 | Coverage: 0.890 | Collisions: 0.004 | Noise: 0.527 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 38m 23.0s
+Episode  1240/3000 | Reward: 166.112 | Coverage: 0.926 | Collisions: 0.001 | Noise: 0.524 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 38m 32.3s
+Episode  1250/3000 | Reward: 163.981 | Coverage: 0.915 | Collisions: 0.002 | Noise: 0.521 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 38m 41.6s
+Episode  1260/3000 | Reward: 163.381 | Coverage: 0.910 | Collisions: 0.002 | Noise: 0.518 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 38m 51.1s
+Episode  1270/3000 | Reward: 149.481 | Coverage: 0.887 | Collisions: 0.003 | Noise: 0.515 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 39m 0.4s
+Episode  1280/3000 | Reward: 157.300 | Coverage: 0.896 | Collisions: 0.002 | Noise: 0.512 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 39m 9.8s
+Episode  1290/3000 | Reward: 159.800 | Coverage: 0.895 | Collisions: 0.002 | Noise: 0.509 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 39m 19.0s
+Episode  1300/3000 | Reward: 161.225 | Coverage: 0.909 | Collisions: 0.001 | Noise: 0.506 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 39m 28.5s
+Episode  1310/3000 | Reward: 162.837 | Coverage: 0.903 | Collisions: 0.002 | Noise: 0.503 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 39m 37.8s
+Episode  1320/3000 | Reward: 164.494 | Coverage: 0.903 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 39m 47.0s
+Episode  1330/3000 | Reward: 157.537 | Coverage: 0.909 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 39m 56.3s
+Episode  1340/3000 | Reward: 162.594 | Coverage: 0.898 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 40m 5.8s
+Episode  1350/3000 | Reward: 153.262 | Coverage: 0.897 | Collisions: 0.004 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.77s | Elapsed: 40m 15.1s
+Episode  1360/3000 | Reward: 155.256 | Coverage: 0.892 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.77s | Elapsed: 40m 24.4s
+Episode  1370/3000 | Reward: 160.575 | Coverage: 0.906 | Collisions: 0.004 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 40m 33.9s
+Episode  1380/3000 | Reward: 166.794 | Coverage: 0.915 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 40m 43.2s
+Episode  1390/3000 | Reward: 153.206 | Coverage: 0.904 | Collisions: 0.007 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 40m 52.5s
+Episode  1400/3000 | Reward: 162.300 | Coverage: 0.924 | Collisions: 0.004 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 41m 2.0s
+  [EVAL] Episode 1400 | Reward: 168.100 | Coverage: 0.860 | Final Coverage: 0.900
+  [EVAL] Saved video: /content/jaxMARL/jax_marl/eval_videos/assembly/2025-12-03_02-27-40/eval_ep1400.gif
+Episode  1410/3000 | Reward: 160.050 | Coverage: 0.910 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 43m 55.1s
+Episode  1420/3000 | Reward: 159.944 | Coverage: 0.906 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 44m 4.7s
+Episode  1430/3000 | Reward: 141.306 | Coverage: 0.892 | Collisions: 0.008 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 44m 14.0s
+Episode  1440/3000 | Reward: 164.956 | Coverage: 0.925 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 44m 23.3s
+Episode  1450/3000 | Reward: 147.306 | Coverage: 0.903 | Collisions: 0.004 | Noise: 0.500 | Buffer: 240000 | Step: 0.05s | Train: 0.79s | Elapsed: 44m 32.9s
+Episode  1460/3000 | Reward: 160.875 | Coverage: 0.901 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 44m 42.2s
+Episode  1470/3000 | Reward: 159.406 | Coverage: 0.927 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 1.04s | Elapsed: 44m 51.8s
+Episode  1480/3000 | Reward: 162.269 | Coverage: 0.917 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 45m 1.1s
+Episode  1490/3000 | Reward: 146.294 | Coverage: 0.888 | Collisions: 0.005 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 45m 10.4s
+Episode  1500/3000 | Reward: 151.537 | Coverage: 0.890 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 45m 19.8s
+Episode  1510/3000 | Reward: 151.362 | Coverage: 0.898 | Collisions: 0.007 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 45m 29.1s
+Episode  1520/3000 | Reward: 160.769 | Coverage: 0.904 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 45m 38.4s
+Episode  1530/3000 | Reward: 148.669 | Coverage: 0.903 | Collisions: 0.006 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 45m 47.7s
+Episode  1540/3000 | Reward: 163.500 | Coverage: 0.929 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 45m 57.0s
+Episode  1550/3000 | Reward: 163.037 | Coverage: 0.908 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 46m 6.5s
+Episode  1560/3000 | Reward: 155.512 | Coverage: 0.927 | Collisions: 0.008 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 46m 15.8s
+Episode  1570/3000 | Reward: 148.912 | Coverage: 0.908 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 46m 25.2s
+Episode  1580/3000 | Reward: 148.675 | Coverage: 0.908 | Collisions: 0.004 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 46m 34.4s
+Episode  1590/3000 | Reward: 157.425 | Coverage: 0.907 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 46m 43.9s
+Episode  1600/3000 | Reward: 161.231 | Coverage: 0.892 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 46m 53.2s
+Saved checkpoint: /content/jaxMARL/jax_marl/checkpoints/assembly/2025-12-03_02-27-40/incremental/checkpoint_ep1600.pkl
+  [EVAL] Episode 1600 | Reward: 169.450 | Coverage: 0.918 | Final Coverage: 1.000
+  [EVAL] Saved video: /content/jaxMARL/jax_marl/eval_videos/assembly/2025-12-03_02-27-40/eval_ep1600.gif
+Episode  1610/3000 | Reward: 155.631 | Coverage: 0.892 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 49m 48.6s
+Episode  1620/3000 | Reward: 151.087 | Coverage: 0.902 | Collisions: 0.004 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 49m 57.9s
+Episode  1630/3000 | Reward: 153.306 | Coverage: 0.891 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 50m 7.5s
+Episode  1640/3000 | Reward: 158.444 | Coverage: 0.896 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 50m 16.9s
+Episode  1650/3000 | Reward: 159.544 | Coverage: 0.903 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 50m 26.2s
+Episode  1660/3000 | Reward: 157.606 | Coverage: 0.892 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 50m 35.8s
+Episode  1670/3000 | Reward: 154.337 | Coverage: 0.913 | Collisions: 0.015 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 50m 45.1s
+Episode  1680/3000 | Reward: 165.212 | Coverage: 0.925 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 50m 54.4s
+Episode  1690/3000 | Reward: 152.625 | Coverage: 0.903 | Collisions: 0.004 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 51m 3.9s
+Episode  1700/3000 | Reward: 154.344 | Coverage: 0.896 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 51m 13.2s
+Episode  1710/3000 | Reward: 156.950 | Coverage: 0.890 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 51m 22.5s
+Episode  1720/3000 | Reward: 154.038 | Coverage: 0.894 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 51m 31.9s
+Episode  1730/3000 | Reward: 157.731 | Coverage: 0.897 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 51m 41.4s
+Episode  1740/3000 | Reward: 166.675 | Coverage: 0.922 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 51m 50.7s
+Episode  1750/3000 | Reward: 161.381 | Coverage: 0.904 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 52m 0.0s
+Episode  1760/3000 | Reward: 157.969 | Coverage: 0.885 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 52m 9.3s
+Episode  1770/3000 | Reward: 162.794 | Coverage: 0.918 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 52m 18.8s
+Episode  1780/3000 | Reward: 155.200 | Coverage: 0.895 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 52m 28.2s
+Episode  1790/3000 | Reward: 156.462 | Coverage: 0.900 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 52m 37.5s
+Episode  1800/3000 | Reward: 150.294 | Coverage: 0.900 | Collisions: 0.005 | Noise: 0.500 | Buffer: 240000 | Step: 0.05s | Train: 0.79s | Elapsed: 52m 46.9s
+  [EVAL] Episode 1800 | Reward: 162.400 | Coverage: 0.926 | Final Coverage: 1.000
+  [EVAL] Saved video: /content/jaxMARL/jax_marl/eval_videos/assembly/2025-12-03_02-27-40/eval_ep1800.gif
+Episode  1810/3000 | Reward: 156.587 | Coverage: 0.908 | Collisions: 0.005 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 55m 47.7s
+Episode  1820/3000 | Reward: 152.262 | Coverage: 0.872 | Collisions: 0.005 | Noise: 0.500 | Buffer: 240000 | Step: 0.05s | Train: 0.79s | Elapsed: 55m 57.3s
+Episode  1830/3000 | Reward: 159.587 | Coverage: 0.908 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 56m 6.6s
+Episode  1840/3000 | Reward: 164.294 | Coverage: 0.916 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 56m 15.9s
+Episode  1850/3000 | Reward: 161.162 | Coverage: 0.906 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.05s | Train: 0.79s | Elapsed: 56m 25.2s
+Episode  1860/3000 | Reward: 157.525 | Coverage: 0.898 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 56m 34.7s
+Episode  1870/3000 | Reward: 163.812 | Coverage: 0.912 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 56m 44.0s
+Episode  1880/3000 | Reward: 156.531 | Coverage: 0.888 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 56m 53.3s
+Episode  1890/3000 | Reward: 142.525 | Coverage: 0.880 | Collisions: 0.006 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 57m 2.6s
+Episode  1900/3000 | Reward: 157.987 | Coverage: 0.897 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 57m 12.1s
+Episode  1910/3000 | Reward: 147.925 | Coverage: 0.899 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 57m 21.4s
+Episode  1920/3000 | Reward: 162.675 | Coverage: 0.914 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 57m 30.7s
+Episode  1930/3000 | Reward: 161.406 | Coverage: 0.919 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 57m 40.0s
+Episode  1940/3000 | Reward: 154.912 | Coverage: 0.893 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 57m 49.6s
+Episode  1950/3000 | Reward: 153.931 | Coverage: 0.898 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 57m 58.9s
+Episode  1960/3000 | Reward: 162.481 | Coverage: 0.890 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 58m 8.2s
+Episode  1970/3000 | Reward: 154.000 | Coverage: 0.911 | Collisions: 0.009 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 58m 17.8s
+Episode  1980/3000 | Reward: 165.344 | Coverage: 0.914 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 58m 27.1s
+Episode  1990/3000 | Reward: 159.412 | Coverage: 0.912 | Collisions: 0.005 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 58m 36.4s
+Episode  2000/3000 | Reward: 156.987 | Coverage: 0.893 | Collisions: 0.005 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 58m 46.0s
+Saved checkpoint: /content/jaxMARL/jax_marl/checkpoints/assembly/2025-12-03_02-27-40/incremental/checkpoint_ep2000.pkl
+  [EVAL] Episode 2000 | Reward: 168.650 | Coverage: 0.889 | Final Coverage: 1.000
+  [EVAL] Saved video: /content/jaxMARL/jax_marl/eval_videos/assembly/2025-12-03_02-27-40/eval_ep2000.gif
+Episode  2010/3000 | Reward: 152.281 | Coverage: 0.896 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 61m 41.4s
+Episode  2020/3000 | Reward: 163.325 | Coverage: 0.913 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 61m 50.8s
+Episode  2030/3000 | Reward: 162.094 | Coverage: 0.920 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 62m 0.4s
+Episode  2040/3000 | Reward: 160.262 | Coverage: 0.904 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 62m 9.7s
+Episode  2050/3000 | Reward: 162.719 | Coverage: 0.913 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 62m 19.0s
+Episode  2060/3000 | Reward: 159.919 | Coverage: 0.900 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 62m 28.7s
+Episode  2070/3000 | Reward: 161.087 | Coverage: 0.894 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 62m 38.1s
+Episode  2080/3000 | Reward: 164.350 | Coverage: 0.907 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 62m 47.4s
+Episode  2090/3000 | Reward: 167.000 | Coverage: 0.911 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 62m 57.1s
+Episode  2100/3000 | Reward: 157.319 | Coverage: 0.904 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 63m 6.5s
+Episode  2110/3000 | Reward: 162.437 | Coverage: 0.907 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 63m 16.0s
+Episode  2120/3000 | Reward: 157.731 | Coverage: 0.906 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 63m 25.4s
+Episode  2130/3000 | Reward: 165.231 | Coverage: 0.922 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 63m 34.7s
+Episode  2140/3000 | Reward: 159.250 | Coverage: 0.904 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 63m 44.0s
+Episode  2150/3000 | Reward: 158.356 | Coverage: 0.905 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 63m 53.4s
+Episode  2160/3000 | Reward: 163.075 | Coverage: 0.905 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.05s | Train: 0.79s | Elapsed: 64m 2.9s
+Episode  2170/3000 | Reward: 161.319 | Coverage: 0.911 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.05s | Train: 0.79s | Elapsed: 64m 12.2s
+Episode  2180/3000 | Reward: 159.269 | Coverage: 0.900 | Collisions: 0.004 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 64m 21.6s
+Episode  2190/3000 | Reward: 162.687 | Coverage: 0.910 | Collisions: 0.004 | Noise: 0.500 | Buffer: 240000 | Step: 0.05s | Train: 0.79s | Elapsed: 64m 30.9s
+Episode  2200/3000 | Reward: 160.762 | Coverage: 0.909 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 64m 40.5s
+  [EVAL] Episode 2200 | Reward: 183.850 | Coverage: 0.954 | Final Coverage: 1.000
+  [EVAL] Saved video: /content/jaxMARL/jax_marl/eval_videos/assembly/2025-12-03_02-27-40/eval_ep2200.gif
+Episode  2210/3000 | Reward: 164.900 | Coverage: 0.914 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 67m 34.9s
+Episode  2220/3000 | Reward: 157.031 | Coverage: 0.906 | Collisions: 0.007 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 67m 44.2s
+Episode  2230/3000 | Reward: 157.331 | Coverage: 0.909 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 67m 53.6s
+Episode  2240/3000 | Reward: 148.937 | Coverage: 0.907 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 68m 3.1s
+Episode  2250/3000 | Reward: 165.006 | Coverage: 0.916 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 68m 12.4s
+Episode  2260/3000 | Reward: 169.862 | Coverage: 0.914 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 68m 21.8s
+Episode  2270/3000 | Reward: 157.681 | Coverage: 0.921 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 68m 31.3s
+Episode  2280/3000 | Reward: 159.506 | Coverage: 0.904 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 68m 40.6s
+Episode  2290/3000 | Reward: 157.819 | Coverage: 0.914 | Collisions: 0.006 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 68m 49.9s
+Episode  2300/3000 | Reward: 161.625 | Coverage: 0.920 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 68m 59.2s
+Episode  2310/3000 | Reward: 160.662 | Coverage: 0.920 | Collisions: 0.004 | Noise: 0.500 | Buffer: 240000 | Step: 0.33s | Train: 0.78s | Elapsed: 69m 8.7s
+Episode  2320/3000 | Reward: 162.575 | Coverage: 0.915 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 69m 18.0s
+Episode  2330/3000 | Reward: 166.787 | Coverage: 0.923 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 69m 27.3s
+Episode  2340/3000 | Reward: 160.531 | Coverage: 0.909 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 69m 36.6s
+Episode  2350/3000 | Reward: 157.344 | Coverage: 0.888 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 69m 45.9s
+Episode  2360/3000 | Reward: 160.400 | Coverage: 0.888 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 69m 55.4s
+Episode  2370/3000 | Reward: 161.962 | Coverage: 0.913 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 70m 4.7s
+Episode  2380/3000 | Reward: 163.000 | Coverage: 0.914 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.05s | Train: 0.79s | Elapsed: 70m 14.0s
+Episode  2390/3000 | Reward: 147.000 | Coverage: 0.878 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 1.06s | Elapsed: 70m 23.6s
+Episode  2400/3000 | Reward: 153.462 | Coverage: 0.888 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 70m 32.9s
+Saved checkpoint: /content/jaxMARL/jax_marl/checkpoints/assembly/2025-12-03_02-27-40/incremental/checkpoint_ep2400.pkl
+  [EVAL] Episode 2400 | Reward: 175.450 | Coverage: 0.925 | Final Coverage: 1.000
+  [EVAL] Saved video: /content/jaxMARL/jax_marl/eval_videos/assembly/2025-12-03_02-27-40/eval_ep2400.gif
+Episode  2410/3000 | Reward: 160.406 | Coverage: 0.926 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 73m 27.4s
+Episode  2420/3000 | Reward: 155.806 | Coverage: 0.893 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 73m 36.7s
+Episode  2430/3000 | Reward: 164.737 | Coverage: 0.915 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 73m 46.4s
+Episode  2440/3000 | Reward: 161.687 | Coverage: 0.909 | Collisions: 0.000 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 73m 55.7s
+Episode  2450/3000 | Reward: 163.712 | Coverage: 0.917 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 74m 5.0s
+Episode  2460/3000 | Reward: 161.519 | Coverage: 0.908 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 74m 14.5s
+Episode  2470/3000 | Reward: 154.381 | Coverage: 0.903 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 74m 23.9s
+Episode  2480/3000 | Reward: 160.594 | Coverage: 0.903 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 74m 33.2s
+Episode  2490/3000 | Reward: 160.531 | Coverage: 0.912 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 74m 42.6s
+Episode  2500/3000 | Reward: 159.594 | Coverage: 0.893 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 74m 51.9s
+Episode  2510/3000 | Reward: 163.800 | Coverage: 0.915 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 75m 1.4s
+Episode  2520/3000 | Reward: 160.250 | Coverage: 0.912 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 75m 10.7s
+Episode  2530/3000 | Reward: 159.912 | Coverage: 0.915 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 75m 20.1s
+Episode  2540/3000 | Reward: 159.625 | Coverage: 0.908 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 75m 29.4s
+Episode  2550/3000 | Reward: 159.225 | Coverage: 0.906 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 75m 38.9s
+Episode  2560/3000 | Reward: 164.125 | Coverage: 0.920 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 75m 48.2s
+Episode  2570/3000 | Reward: 162.650 | Coverage: 0.924 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 75m 57.6s
+Episode  2580/3000 | Reward: 158.506 | Coverage: 0.912 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 76m 6.9s
+Episode  2590/3000 | Reward: 161.862 | Coverage: 0.907 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 76m 16.5s
+Episode  2600/3000 | Reward: 160.100 | Coverage: 0.921 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 76m 25.8s
+  [EVAL] Episode 2600 | Reward: 136.150 | Coverage: 0.932 | Final Coverage: 1.000
+  [EVAL] Saved video: /content/jaxMARL/jax_marl/eval_videos/assembly/2025-12-03_02-27-40/eval_ep2600.gif
+Episode  2610/3000 | Reward: 156.569 | Coverage: 0.915 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 79m 21.2s
+Episode  2620/3000 | Reward: 158.125 | Coverage: 0.905 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 79m 30.5s
+Episode  2630/3000 | Reward: 159.475 | Coverage: 0.901 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 79m 39.8s
+Episode  2640/3000 | Reward: 164.900 | Coverage: 0.925 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 79m 49.3s
+Episode  2650/3000 | Reward: 158.606 | Coverage: 0.905 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 79m 58.6s
+Episode  2660/3000 | Reward: 165.244 | Coverage: 0.912 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 80m 7.9s
+Episode  2670/3000 | Reward: 149.381 | Coverage: 0.907 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 80m 17.2s
+Episode  2680/3000 | Reward: 162.444 | Coverage: 0.915 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 80m 26.5s
+Episode  2690/3000 | Reward: 154.787 | Coverage: 0.902 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 80m 36.0s
+Episode  2700/3000 | Reward: 159.650 | Coverage: 0.918 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 80m 45.3s
+Episode  2710/3000 | Reward: 165.144 | Coverage: 0.924 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 80m 54.6s
+Episode  2720/3000 | Reward: 159.031 | Coverage: 0.903 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 81m 3.9s
+Episode  2730/3000 | Reward: 161.587 | Coverage: 0.913 | Collisions: 0.004 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 81m 13.4s
+Episode  2740/3000 | Reward: 158.925 | Coverage: 0.899 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 81m 22.7s
+Episode  2750/3000 | Reward: 163.019 | Coverage: 0.911 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 81m 32.0s
+Episode  2760/3000 | Reward: 168.050 | Coverage: 0.935 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 81m 41.3s
+Episode  2770/3000 | Reward: 145.231 | Coverage: 0.900 | Collisions: 0.005 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 81m 50.9s
+Episode  2780/3000 | Reward: 151.200 | Coverage: 0.907 | Collisions: 0.004 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 82m 0.2s
+Episode  2790/3000 | Reward: 147.487 | Coverage: 0.885 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 82m 9.5s
+Episode  2800/3000 | Reward: 158.219 | Coverage: 0.912 | Collisions: 0.004 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 82m 19.1s
+Saved checkpoint: /content/jaxMARL/jax_marl/checkpoints/assembly/2025-12-03_02-27-40/incremental/checkpoint_ep2800.pkl
+  [EVAL] Episode 2800 | Reward: 173.500 | Coverage: 0.902 | Final Coverage: 0.950
+  [EVAL] Saved video: /content/jaxMARL/jax_marl/eval_videos/assembly/2025-12-03_02-27-40/eval_ep2800.gif
+Episode  2810/3000 | Reward: 155.900 | Coverage: 0.911 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 85m 15.0s
+Episode  2820/3000 | Reward: 156.212 | Coverage: 0.908 | Collisions: 0.005 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 85m 24.3s
+Episode  2830/3000 | Reward: 163.475 | Coverage: 0.919 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 85m 33.7s
+Episode  2840/3000 | Reward: 159.644 | Coverage: 0.909 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.05s | Train: 0.78s | Elapsed: 85m 43.0s
+Episode  2850/3000 | Reward: 159.425 | Coverage: 0.899 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 85m 52.5s
+Episode  2860/3000 | Reward: 166.762 | Coverage: 0.925 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 86m 1.9s
+Episode  2870/3000 | Reward: 155.919 | Coverage: 0.911 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 86m 11.2s
+Episode  2880/3000 | Reward: 156.744 | Coverage: 0.905 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 86m 20.8s
+Episode  2890/3000 | Reward: 161.431 | Coverage: 0.905 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 86m 30.1s
+Episode  2900/3000 | Reward: 158.481 | Coverage: 0.914 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 1.06s | Elapsed: 86m 39.7s
+Episode  2910/3000 | Reward: 156.819 | Coverage: 0.902 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 86m 49.0s
+Episode  2920/3000 | Reward: 164.287 | Coverage: 0.914 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 86m 58.4s
+Episode  2930/3000 | Reward: 164.994 | Coverage: 0.920 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 87m 7.9s
+Episode  2940/3000 | Reward: 151.406 | Coverage: 0.904 | Collisions: 0.006 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.79s | Elapsed: 87m 17.2s
+Episode  2950/3000 | Reward: 160.800 | Coverage: 0.914 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 87m 26.5s
+Episode  2960/3000 | Reward: 156.019 | Coverage: 0.912 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 87m 35.8s
+Episode  2970/3000 | Reward: 169.481 | Coverage: 0.926 | Collisions: 0.001 | Noise: 0.500 | Buffer: 240000 | Step: 0.05s | Train: 0.79s | Elapsed: 87m 45.1s
+Episode  2980/3000 | Reward: 160.075 | Coverage: 0.907 | Collisions: 0.002 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 87m 54.6s
+Episode  2990/3000 | Reward: 163.037 | Coverage: 0.928 | Collisions: 0.003 | Noise: 0.500 | Buffer: 240000 | Step: 0.04s | Train: 0.78s | Elapsed: 88m 4.0s
+
+============================================================
+Training completed in 88.2 minutes
+Best episode reward: 172.869
+============================================================
+Training log saved to: /content/jaxMARL/jax_marl/logs/assembly/2025-12-03_02-27-40/training_log.json
+Saved checkpoint: /content/jaxMARL/jax_marl/checkpoints/assembly/2025-12-03_02-27-40/final_checkpoint.pkl

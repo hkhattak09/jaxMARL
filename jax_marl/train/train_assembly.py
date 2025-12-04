@@ -85,6 +85,8 @@ class TrainingMetrics(NamedTuple):
     episode_reward_mean: float
     episode_reward_std: float
     coverage_rate: float
+    distribution_uniformity: float
+    voronoi_uniformity: float
     collision_rate: float
     avg_dist_to_target: float
     step_time: float
@@ -216,6 +218,8 @@ class RolloutCarry:
     episode_rewards: jax.Array  # (n_envs,)
     total_coverage: jax.Array  # scalar
     total_collision: jax.Array  # scalar
+    total_distribution_uniformity: jax.Array  # scalar
+    total_voronoi_uniformity: jax.Array  # scalar
     done_flag: jax.Array  # bool scalar - whether all envs are done
 
 
@@ -225,6 +229,8 @@ class RolloutMetrics:
     reward: jax.Array
     coverage: jax.Array
     collision: jax.Array
+    distribution_uniformity: jax.Array
+    voronoi_uniformity: jax.Array
 
 
 def create_jit_rollout_fn(
@@ -310,6 +316,8 @@ def create_jit_rollout_fn(
         step_reward = jnp.mean(rewards_batch, axis=1)  # (n_envs,)
         step_coverage = jnp.mean(info_batch["coverage_rate"])
         step_collision = jnp.mean(new_env_states.is_colliding)
+        step_dist_uniformity = jnp.mean(info_batch["distribution_uniformity"])
+        step_voronoi_uniformity = jnp.mean(info_batch["voronoi_uniformity"])
         
         # Check if done
         all_done = jnp.all(dones_batch[:, 0])
@@ -323,6 +331,8 @@ def create_jit_rollout_fn(
             episode_rewards=carry.episode_rewards + step_reward,
             total_coverage=carry.total_coverage + step_coverage,
             total_collision=carry.total_collision + step_collision,
+            total_distribution_uniformity=carry.total_distribution_uniformity + step_dist_uniformity,
+            total_voronoi_uniformity=carry.total_voronoi_uniformity + step_voronoi_uniformity,
             done_flag=carry.done_flag | all_done,
         )
         
@@ -331,6 +341,8 @@ def create_jit_rollout_fn(
             reward=jnp.mean(step_reward),
             coverage=step_coverage,
             collision=step_collision,
+            distribution_uniformity=step_dist_uniformity,
+            voronoi_uniformity=step_voronoi_uniformity,
         )
         
         return new_carry, metrics
@@ -362,6 +374,8 @@ def create_jit_rollout_fn(
             episode_rewards=jnp.zeros(n_envs),
             total_coverage=jnp.array(0.0),
             total_collision=jnp.array(0.0),
+            total_distribution_uniformity=jnp.array(0.0),
+            total_voronoi_uniformity=jnp.array(0.0),
             done_flag=jnp.array(False),
         )
         
@@ -431,6 +445,8 @@ def run_episode(
         episode_rewards = final_carry.episode_rewards
         total_coverage = final_carry.total_coverage
         total_collision = final_carry.total_collision
+        total_distribution_uniformity = final_carry.total_distribution_uniformity
+        total_voronoi_uniformity = final_carry.total_voronoi_uniformity
         num_steps = config.max_steps  # Always runs full episode with scan
         
     else:
@@ -438,6 +454,8 @@ def run_episode(
         episode_rewards = jnp.zeros(n_envs)
         total_coverage = jnp.array(0.0)
         total_collision = jnp.array(0.0)
+        total_distribution_uniformity = jnp.array(0.0)
+        total_voronoi_uniformity = jnp.array(0.0)
         num_steps = 0
         
         for step in range(config.max_steps):
@@ -487,6 +505,8 @@ def run_episode(
             episode_rewards = episode_rewards + jnp.mean(rewards_batch, axis=1)
             total_coverage = total_coverage + jnp.mean(info_batch["coverage_rate"])
             total_collision = total_collision + jnp.mean(env_states.is_colliding)
+            total_distribution_uniformity = total_distribution_uniformity + jnp.mean(info_batch["distribution_uniformity"])
+            total_voronoi_uniformity = total_voronoi_uniformity + jnp.mean(info_batch["voronoi_uniformity"])
             num_steps = step + 1
             
             if jnp.all(dones_batch[:, 0]):
@@ -522,6 +542,8 @@ def run_episode(
         "episode_reward_std": 0.0,
         "coverage_rate": float(total_coverage) / num_steps if num_steps > 0 else 0.0,
         "collision_rate": float(total_collision) / num_steps if num_steps > 0 else 0.0,
+        "distribution_uniformity": float(total_distribution_uniformity) / num_steps if num_steps > 0 else 0.0,
+        "voronoi_uniformity": float(total_voronoi_uniformity) / num_steps if num_steps > 0 else 0.0,
         "step_time": step_time,
         "noise_scale": float(maddpg_state.noise_scale),
         "steps_in_episode": num_steps,
@@ -568,6 +590,8 @@ def run_eval_episode(
     step_rewards = []
     coverages = []
     collisions = []
+    dist_uniformities = []
+    voronoi_uniformities = []
     
     for step in range(config.max_steps):
         key, action_key, step_key = random.split(key, 3)
@@ -598,16 +622,22 @@ def run_eval_episode(
         step_rewards.append(step_reward)
         coverages.append(float(info["coverage_rate"]))
         collisions.append(float(jnp.mean(env_state.is_colliding)))
+        dist_uniformities.append(float(info["distribution_uniformity"]))
+        voronoi_uniformities.append(float(info["voronoi_uniformity"]))
         
         if dones[0]:
             break
     
+    num_steps = step + 1
     metrics = {
         "eval_reward": episode_reward,
+        "eval_reward_mean": episode_reward / num_steps if num_steps > 0 else 0.0,
         "eval_coverage": np.mean(coverages),
+        "eval_distribution_uniformity": np.mean(dist_uniformities),
+        "eval_voronoi_uniformity": np.mean(voronoi_uniformities),
         "eval_collision": np.mean(collisions),
         "eval_final_coverage": coverages[-1] if coverages else 0.0,
-        "eval_steps": step + 1,
+        "eval_steps": num_steps,
     }
     
     return metrics, states
@@ -845,13 +875,13 @@ def train(
         if episode % config.log_interval == 0 and verbose:
             print(
                 f"Episode {episode:5d}/{config.n_episodes} | "
-                f"Reward: {episode_metrics['episode_reward']:7.3f} | "
+                f"Reward: {episode_metrics['episode_reward_mean']:7.3f} | "
                 f"Coverage: {episode_metrics['coverage_rate']:.3f} | "
+                f"DistUnif: {episode_metrics['distribution_uniformity']:.3f} | "
+                f"VoronoiUnif: {episode_metrics['voronoi_uniformity']:.3f} | "
                 f"Collisions: {episode_metrics['collision_rate']:.3f} | "
                 f"Noise: {episode_metrics['noise_scale']:.3f} | "
                 f"Buffer: {buffer_size_val:6d} | "
-                f"Step: {episode_metrics['step_time']:.2f}s | "
-                f"Train: {train_time:.2f}s | "
                 f"Elapsed: {elapsed_mins}m {elapsed_secs:.1f}s"
             )
         
@@ -859,9 +889,11 @@ def train(
         if episode % config.log_interval == 0:
             log_entry = {
                 "episode": episode,
-                "reward_mean": episode_metrics["episode_reward"],
+                "reward_mean": episode_metrics["episode_reward_mean"],
                 "reward_std": episode_metrics.get("episode_reward_std", 0.0),
                 "coverage_rate": episode_metrics["coverage_rate"],
+                "distribution_uniformity": episode_metrics["distribution_uniformity"],
+                "voronoi_uniformity": episode_metrics["voronoi_uniformity"],
                 "collision_rate": episode_metrics["collision_rate"],
                 "noise_scale": episode_metrics["noise_scale"],
                 "buffer_size": buffer_size_val,
@@ -900,7 +932,7 @@ def train(
             if verbose:
                 print(
                     f"  [EVAL] Episode {episode} | "
-                    f"Reward: {eval_metrics['eval_reward']:7.3f} | "
+                    f"Reward: {eval_metrics['eval_reward_mean']:7.3f} | "
                     f"Coverage: {eval_metrics['eval_coverage']:.3f} | "
                     f"Final Coverage: {eval_metrics['eval_final_coverage']:.3f}"
                 )
