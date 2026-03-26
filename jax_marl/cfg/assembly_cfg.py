@@ -222,7 +222,7 @@ config = None
 # # Use this for full training runs
 config = AssemblyTrainConfig(
     # Environment
-    n_agents=20,
+    n_agents=30,
     n_parallel_envs=8,
     arena_size=5.0,
     agent_radius=0.035,             # Matches MARL-LLM original
@@ -231,7 +231,7 @@ config = AssemblyTrainConfig(
     max_acceleration=1.0,
     # Observation
     k_neighbors=6,
-    d_sen=0.5,
+    d_sen=0.4,
     include_self_state=True,
     # Physics
     dt=0.1,
