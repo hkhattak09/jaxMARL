@@ -115,7 +115,6 @@ class MADDPGConfig(NamedTuple):
         noise_scale_final: Final exploration noise
         noise_decay_steps: Steps to decay noise over
         noise_schedule: 'linear', 'exponential', or 'cosine'
-        update_every: Steps between updates
         updates_per_step: Number of gradient updates per step
         discrete_action: Whether actions are discrete
         use_layer_norm: Whether to use layer normalization
@@ -145,7 +144,6 @@ class MADDPGConfig(NamedTuple):
     noise_scale_final: float = 0.05
     noise_decay_steps: int = 100000
     noise_schedule: str = 'linear'
-    update_every: int = 100
     updates_per_step: int = 1
     discrete_action: bool = False
     use_layer_norm: bool = True  # Enable layer norm for better training stability

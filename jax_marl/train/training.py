@@ -10,6 +10,12 @@ Then run:
 To resume from a checkpoint, set CHECKPOINT_PATH below.
 """
 
+import os
+# Must be set before JAX initializes (before any jax import).
+# Uses CUDA virtual memory API instead of BFC allocator — eliminates
+# fragmentation-induced OOMs when peak memory spikes during compilation.
+os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
+
 import sys
 from pathlib import Path
 

@@ -71,7 +71,6 @@ class TestAssemblyTrainConfig:
         assert config.noise_scale_initial == 0.9
         assert config.noise_scale_final == 0.5
         assert config.noise_decay_steps == 100000
-        assert config.update_every == 100
         assert config.updates_per_step == 30
         assert config.prior_weight == 0.3
         

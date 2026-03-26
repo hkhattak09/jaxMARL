@@ -73,7 +73,6 @@ class AssemblyTrainConfig(NamedTuple):
     noise_scale_final: float = 0.5      # Final exploration noise
     noise_decay_steps: int = 100000     # Steps to decay noise
     
-    update_every: int = 100             # Steps between gradient updates
     updates_per_step: int = 30          # Gradient updates per training step
     
     prior_weight: float = 0.3           # LLM prior regularization (0 = disabled)
@@ -147,7 +146,6 @@ config = None
 #     noise_scale_initial=0.9,
 #     noise_scale_final=0.1,
 #     noise_decay_steps=4400,
-#     update_every=50,
 #     updates_per_step=5,
 #     prior_weight=0.3,
 #     # Training
@@ -203,7 +201,6 @@ config = None
 #     noise_scale_initial=0.9,
 #     noise_scale_final=0.1,
 #     noise_decay_steps=264000,
-#     update_every=100,
 #     updates_per_step=20,
 #     prior_weight=0.3,
 #     # Training
@@ -250,14 +247,13 @@ config = AssemblyTrainConfig(
     lr_critic=1e-3,
     gamma=0.95,
     tau=0.01,
-    buffer_size=240000,
+    buffer_size=80000,    # 50 episodes × 1,600 transitions/episode (8 envs × 200 steps)
     batch_size=2048,
     warmup_steps=50000,
     noise_scale_initial=0.9,
     noise_scale_final=0.5,
     noise_decay_steps=2112000,
-    update_every=100,
-    updates_per_step=30,
+    updates_per_step=20,
     prior_weight=0.5,
     # Training
     seed=226,
@@ -369,7 +365,6 @@ def config_to_maddpg_config(config: AssemblyTrainConfig, obs_dim: int, action_di
         noise_scale_initial=config.noise_scale_initial,
         noise_scale_final=config.noise_scale_final,
         noise_decay_steps=config.noise_decay_steps,
-        update_every=config.update_every,
         updates_per_step=config.updates_per_step,
         prior_weight=config.prior_weight,
         # TD3 enhancements
