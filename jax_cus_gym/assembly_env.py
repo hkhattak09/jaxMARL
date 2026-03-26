@@ -590,7 +590,7 @@ class AssemblySwarmEnv(MultiAgentEnv):
         self,
         state: AssemblyState,
         params: AssemblyParams,
-        precomputed_is_colliding: jnp.ndarray,
+        precomputed_is_colliding: Optional[jnp.ndarray] = None,
     ) -> AssemblyState:
         """Update occupancy tracking."""
         # Distance from each agent to each grid cell
@@ -610,6 +610,11 @@ class AssemblySwarmEnv(MultiAgentEnv):
         r_avoid = params.reward_params.collision_threshold
         occupied_by_any = jnp.any(agent_to_grid_dist < r_avoid / 2, axis=0)
         occupied_mask = occupied_by_any & state.grid_mask
+
+        if precomputed_is_colliding is None:
+            precomputed_is_colliding = compute_agent_collisions(
+                state.positions, params.reward_params.collision_threshold
+            )
 
         return state.replace(
             in_target=in_target,
