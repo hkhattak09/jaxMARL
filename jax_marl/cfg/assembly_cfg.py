@@ -264,7 +264,7 @@ config = AssemblyTrainConfig(
     n_episodes=3000,
     log_interval=10,
     save_interval=100,
-    eval_interval=1000,
+    eval_interval=500,
     # Paths
     shape_file=None,
     checkpoint_dir=None,
