@@ -71,9 +71,9 @@ from assembly_env import (
     make_assembly_env,
     make_vec_env,
     compute_prior_policy,
+    compute_r_avoid,
 )
 from shape_loader import load_shapes_from_pickle
-from observations import compute_observation_dim
 
 
 # ============================================================================
@@ -264,8 +264,6 @@ def create_jit_rollout_fn(
     def compute_priors_batch(positions, velocities, grid_centers, grid_mask, l_cell):
         """Compute prior actions for all environments."""
         def single_env_prior(pos, vel, gc, gm, lc):
-            # Compute r_avoid dynamically using MARL-LLM formula
-            from assembly_env import compute_r_avoid
             r_avoid = compute_r_avoid(gm, n_agents, lc, params.r_avoid)
             return compute_prior_policy(
                 pos, vel, gc, gm, lc,
@@ -474,8 +472,6 @@ def run_episode(
             
             if config.prior_weight > 0:
                 def compute_priors_single_env(positions, velocities, grid_centers, grid_mask, l_cell):
-                    # Compute r_avoid dynamically using MARL-LLM formula
-                    from assembly_env import compute_r_avoid
                     r_avoid = compute_r_avoid(grid_mask, n_agents, l_cell, params.r_avoid)
                     return compute_prior_policy(
                         positions, velocities, grid_centers, grid_mask, l_cell,
@@ -719,53 +715,6 @@ def create_jit_train_step(
         return final_state, info
     
     return jit_train_step
-
-
-def train_step(
-    maddpg: MADDPG,
-    maddpg_state: MADDPGState,
-    key: jax.Array,
-    config: AssemblyTrainConfig,
-) -> Tuple[MADDPGState, Dict[str, float]]:
-    """Perform gradient updates (LEGACY - use create_jit_train_step for speed).
-    
-    This is kept for backwards compatibility but is slow due to Python loops.
-    Use create_jit_train_step() instead for production training.
-    
-    Args:
-        maddpg: MADDPG instance
-        maddpg_state: Current MADDPG state
-        key: Random key
-        config: Training configuration
-        
-    Returns:
-        new_state: Updated MADDPG state
-        info: Training metrics
-    """
-    # Check if buffer has enough samples
-    buffer_size = maddpg_state.buffer_state.size
-    if buffer_size < config.warmup_steps:
-        return maddpg_state, {"buffer_size": int(buffer_size), "updated": False}
-    
-    # Perform multiple gradient updates
-    total_actor_loss = 0.0
-    total_critic_loss = 0.0
-    
-    for _ in range(config.updates_per_step):
-        key, update_key = random.split(key)
-        maddpg_state, update_info = maddpg.update(update_key, maddpg_state)
-        
-        total_actor_loss += update_info.get("actor_loss", 0.0)
-        total_critic_loss += update_info.get("critic_loss", 0.0)
-    
-    info = {
-        "actor_loss": total_actor_loss / config.updates_per_step,
-        "critic_loss": total_critic_loss / config.updates_per_step,
-        "buffer_size": int(buffer_size),
-        "updated": True,
-    }
-    
-    return maddpg_state, info
 
 
 # ============================================================================
@@ -1012,15 +961,23 @@ def save_checkpoint(
         "total_steps": training_state.total_steps,
         "best_reward": training_state.best_reward,
         "noise_scale": float(training_state.maddpg_state.noise_scale),
-        # Save agent parameters
+        # Save agent parameters (agent_states is now a stacked DDPGAgentState)
         "agent_params": [
             {
-                "actor_params": agent_state.actor_params,
-                "critic_params": agent_state.critic_params,
-                "target_actor_params": agent_state.target_actor_params,
-                "target_critic_params": agent_state.target_critic_params,
+                "actor_params": jax.tree_util.tree_map(
+                    lambda x: x[i], training_state.maddpg_state.agent_states.actor_params
+                ),
+                "critic_params": jax.tree_util.tree_map(
+                    lambda x: x[i], training_state.maddpg_state.agent_states.critic_params
+                ),
+                "target_actor_params": jax.tree_util.tree_map(
+                    lambda x: x[i], training_state.maddpg_state.agent_states.target_actor_params
+                ),
+                "target_critic_params": jax.tree_util.tree_map(
+                    lambda x: x[i], training_state.maddpg_state.agent_states.target_critic_params
+                ),
             }
-            for agent_state in training_state.maddpg_state.agent_states
+            for i in range(config.n_agents)
         ],
     }
     
@@ -1054,21 +1011,16 @@ def load_checkpoint(
     key = random.PRNGKey(config.seed)
     training_state, env, maddpg, params, vec_reset, vec_step = create_training_state(config, key)
     
-    # Restore agent parameters
-    agent_states = []
-    for i, agent_params in enumerate(checkpoint["agent_params"]):
-        agent_state = training_state.maddpg_state.agent_states[i]
-        agent_state = agent_state.replace(
-            actor_params=agent_params["actor_params"],
-            critic_params=agent_params["critic_params"],
-            target_actor_params=agent_params["target_actor_params"],
-            target_critic_params=agent_params["target_critic_params"],
-        )
-        agent_states.append(agent_state)
-    
-    maddpg_state = training_state.maddpg_state.replace(
-        agent_states=agent_states,
-        noise_scale=jnp.array(checkpoint["noise_scale"]),
+    # Restore agent parameters via maddpg.load_params
+    # (agent_states is now a stacked DDPGAgentState, not a list)
+    maddpg_state = maddpg.load_params(
+        training_state.maddpg_state,
+        {
+            "agent_params": checkpoint["agent_params"],
+            "step": training_state.maddpg_state.step,
+            "episode": training_state.maddpg_state.episode,
+            "noise_scale": jnp.array(checkpoint["noise_scale"]),
+        },
     )
     
     training_state = training_state.replace(

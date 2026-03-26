@@ -43,36 +43,6 @@ class ObservationParams:
     vel_max: float = 0.8
 
 
-def compute_observation_dim(obs_params: ObservationParams) -> int:
-    """Compute the total observation dimension per agent.
-    
-    Observation structure:
-    - Self state (if included): 2*dim (position + velocity)
-    - Neighbors: 2*dim*topo_nei_max (relative pos + relative vel for each)
-    - Target grid: dim*num_obs_grid_max (relative positions of grid cells)
-    - Target info: 2*dim (nearest target position + velocity)
-    
-    For dim=2:
-    - Self: 4 (if included)
-    - Neighbors: 4 * topo_nei_max
-    - Grid: 2 * num_obs_grid_max  
-    - Target: 4
-    
-    Args:
-        obs_params: Observation parameters
-        
-    Returns:
-        Total observation dimension
-    """
-    dim = 2
-    self_dim = 2 * dim if obs_params.include_self_state else 0
-    neighbor_dim = 2 * dim * obs_params.topo_nei_max
-    target_dim = 2 * dim  # Target position and velocity (relative)
-    grid_dim = dim * obs_params.num_obs_grid_max
-    
-    return self_dim + neighbor_dim + target_dim + grid_dim
-
-
 def get_k_nearest_neighbors(
     agent_idx: int,
     positions: jax.Array,
@@ -156,9 +126,11 @@ def get_k_nearest_neighbors_all_agents(
     is_periodic: bool = False,
     boundary_width: float = 2.4,
     boundary_height: float = 2.4,
+    precomputed_rel_pos: Optional[jax.Array] = None,
+    precomputed_distances: Optional[jax.Array] = None,
 ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     """Get k nearest neighbors for all agents (vectorized).
-    
+
     Args:
         positions: All agent positions, shape (n_agents, 2)
         velocities: All agent velocities, shape (n_agents, 2)
@@ -167,7 +139,9 @@ def get_k_nearest_neighbors_all_agents(
         is_periodic: Whether to use periodic boundaries
         boundary_width: Half-width of boundary
         boundary_height: Half-height of boundary
-        
+        precomputed_rel_pos: Optional pre-computed relative positions (n_agents, n_agents, 2)
+        precomputed_distances: Optional pre-computed pairwise distances (n_agents, n_agents)
+
     Returns:
         rel_positions: Shape (n_agents, k, 2)
         rel_velocities: Shape (n_agents, k, 2)
@@ -175,9 +149,12 @@ def get_k_nearest_neighbors_all_agents(
         neighbor_indices: Shape (n_agents, k)
     """
     n_agents = positions.shape[0]
-    
-    # Compute all pairwise distances
-    if is_periodic:
+
+    # Compute all pairwise distances (skip if pre-computed)
+    if precomputed_rel_pos is not None and precomputed_distances is not None:
+        rel_pos_all = precomputed_rel_pos
+        distances_all = precomputed_distances
+    elif is_periodic:
         rel_pos_all, distances_all, _ = compute_pairwise_distances_periodic(
             positions, boundary_width, boundary_height
         )

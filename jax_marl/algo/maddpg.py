@@ -80,15 +80,15 @@ except ImportError:
 @struct.dataclass
 class MADDPGState:
     """Complete state for MADDPG training.
-    
+
     Attributes:
-        agent_states: List of DDPGAgentState for each agent
+        agent_states: Stacked DDPGAgentState where every param leaf has shape (n_agents, ...)
         buffer_state: Replay buffer state
         step: Global training step counter
         episode: Episode counter
         noise_scale: Current exploration noise scale
     """
-    agent_states: List[DDPGAgentState]
+    agent_states: DDPGAgentState
     buffer_state: ReplayBufferState
     step: jnp.ndarray
     episode: jnp.ndarray
@@ -182,12 +182,11 @@ class MADDPG:
         
         # During rollout
         actions, log_probs, state = maddpg.select_actions(key, state, observations)
-        
-        # Store transition
-        state = maddpg.store_transition(state, obs, actions, rewards, next_obs, dones)
-        
-        # Update
-        state, info = maddpg.update(key, state)
+        state = maddpg.store_transitions_batched(state, obs, actions, rewards, next_obs, dones)
+
+        # JIT-compiled update
+        jit_update = maddpg.create_jit_update()
+        state, info = jit_update(state, key)
         ```
     """
     
@@ -221,42 +220,37 @@ class MADDPG:
         self.target_noise = config.target_noise
         self.target_noise_clip = config.target_noise_clip
         
-        # Create networks (shared across all agents if shared_critic)
-        self.actors = []
-        self.critics = []
-        
-        for i in range(self.n_agents):
-            if config.discrete_action:
-                actor = ActorDiscrete(
-                    n_actions=config.action_dims[i],
-                    hidden_dims=config.hidden_dims,
-                    use_layer_norm=config.use_layer_norm,
-                )
-            else:
-                actor = Actor(
-                    action_dim=config.action_dims[i],
-                    hidden_dims=config.hidden_dims,
-                    use_layer_norm=config.use_layer_norm,
-                )
-            self.actors.append(actor)
-            
-            if not config.shared_critic or i == 0:
-                # Use CriticTwin for TD3, regular Critic otherwise
-                if config.use_td3:
-                    critic = CriticTwin(
-                        hidden_dims=config.hidden_dims,
-                        use_layer_norm=config.use_layer_norm,
-                    )
-                else:
-                    critic = Critic(
-                        hidden_dims=config.hidden_dims,
-                        use_layer_norm=config.use_layer_norm,
-                    )
-                self.critics.append(critic)
-        
-        if config.shared_critic:
-            # All agents share the same critic
-            self.critics = [self.critics[0]] * self.n_agents
+        # Create a SINGLE actor and critic instance (all agents share the same architecture;
+        # only their parameters differ, which are stored in the stacked agent_states).
+        if config.discrete_action:
+            self.actor = ActorDiscrete(
+                n_actions=config.action_dims[0],
+                hidden_dims=config.hidden_dims,
+                use_layer_norm=config.use_layer_norm,
+            )
+        else:
+            self.actor = Actor(
+                action_dim=config.action_dims[0],
+                hidden_dims=config.hidden_dims,
+                use_layer_norm=config.use_layer_norm,
+            )
+
+        # Use CriticTwin for TD3, regular Critic otherwise
+        if config.use_td3:
+            self.critic = CriticTwin(
+                hidden_dims=config.hidden_dims,
+                use_layer_norm=config.use_layer_norm,
+            )
+        else:
+            self.critic = Critic(
+                hidden_dims=config.hidden_dims,
+                use_layer_norm=config.use_layer_norm,
+            )
+
+        # Backward-compat aliases so that any code still referencing self.actors[i] or
+        # self.critics[i] continues to work (they all point to the same instance).
+        self.actors = [self.actor] * self.n_agents
+        self.critics = [self.critic] * self.n_agents
         
         # Create optimizers
         if config.max_grad_norm is not None:
@@ -297,35 +291,44 @@ class MADDPG:
         """
         keys = random.split(key, self.n_agents + 1)
         buffer_key = keys[0]
-        agent_keys = keys[1:]
-        
-        # Initialize agent states
-        agent_states = []
-        for i, (k, actor, critic) in enumerate(zip(agent_keys, self.actors, self.critics)):
-            agent_config = AgentConfig(
-                obs_dim=self.obs_dims[i],
-                action_dim=self.action_dims[i],
-                critic_input_dim=self.critic_input_dim,
-                hidden_dims=self.config.hidden_dims,
-                lr_actor=self.config.lr_actor,
-                lr_critic=self.config.lr_critic,
-                gamma=self.config.gamma,
-                tau=self.config.tau,
-                discrete_action=self.config.discrete_action,
-                noise_type='gaussian',
-                noise_scale=self.config.noise_scale_initial,
-                use_layer_norm=self.config.use_layer_norm,
-                max_grad_norm=self.config.max_grad_norm,
+        agent_keys = keys[1:]  # shape (n_agents, 2)
+
+        # Build dummy inputs that match what the networks expect at init time
+        dummy_obs = jnp.zeros((1, self.obs_dims[0]))
+        dummy_ci = jnp.zeros((1, self.global_state_dim))
+        dummy_ca = jnp.zeros((1, self.total_action_dim))
+
+        # Capture Python objects for the closure (not traced)
+        actor = self.actor
+        critic = self.critic
+        actor_optimizer = self.actor_optimizer
+        critic_optimizer = self.critic_optimizer
+
+        def init_one_agent(k):
+            key_a, key_c = random.split(k)
+            ap = actor.init(key_a, dummy_obs)
+            cp = critic.init(key_c, dummy_ci, dummy_ca)
+            aopt = actor_optimizer.init(ap)
+            copt = critic_optimizer.init(cp)
+            return DDPGAgentState(
+                actor_params=ap,
+                critic_params=cp,
+                target_actor_params=ap,
+                target_critic_params=cp,
+                actor_opt_state=aopt,
+                critic_opt_state=copt,
+                noise_state=None,
+                step=jnp.array(0, dtype=jnp.int32),
             )
-            
-            state = create_agent_with_networks(k, agent_config, actor, critic)
-            agent_states.append(state)
-        
+
+        # vmap over agent keys -> stacked state with (n_agents, ...) leaves
+        stacked_agent_states = jax.vmap(init_one_agent)(agent_keys)
+
         # Initialize buffer
         buffer_state = self.buffer.init()
-        
+
         return MADDPGState(
-            agent_states=agent_states,
+            agent_states=stacked_agent_states,
             buffer_state=buffer_state,
             step=jnp.array(0, dtype=jnp.int32),
             episode=jnp.array(0, dtype=jnp.int32),
@@ -353,182 +356,30 @@ class MADDPG:
             new_state: Updated state (noise state may change)
         """
         keys = random.split(key, self.n_agents)
-        
-        actions = []
-        log_probs = []
-        new_agent_states = []
-        
-        for i, (k, actor, agent_state, obs) in enumerate(
-            zip(keys, self.actors, state.agent_states, observations)
-        ):
-            if explore:
-                action, log_prob, new_noise_state = select_action_with_noise(
-                    key=k,
-                    actor=actor,
-                    actor_params=agent_state.actor_params,
-                    obs=obs,
-                    noise_scale=float(state.noise_scale),
-                    noise_type='gaussian',
-                    noise_state=agent_state.noise_state,
-                    epsilon=0.0,
-                    discrete_action=self.config.discrete_action,
-                )
-                
-                if new_noise_state is not None:
-                    new_agent_state = agent_state.replace(noise_state=new_noise_state)
-                else:
-                    new_agent_state = agent_state
-            else:
-                action = select_action(actor, agent_state.actor_params, obs)
-                log_prob = jnp.zeros((1,))
-                new_agent_state = agent_state
-            
-            actions.append(action)
-            log_probs.append(log_prob)
-            new_agent_states.append(new_agent_state)
-        
-        new_state = state.replace(agent_states=new_agent_states)
-        
-        return actions, log_probs, new_state
-    
-    def select_target_actions(
-        self,
-        state: MADDPGState,
-        next_observations: jax.Array,
-    ) -> jax.Array:
-        """Select target actions for all agents (for computing targets).
-        
-        Args:
-            state: Current MADDPG state
-            next_observations: Next observations, shape (batch, total_obs_dim)
-            
-        Returns:
-            target_actions: All target actions concatenated, shape (batch, total_action_dim)
-        """
-        batch_size = next_observations.shape[0]
-        target_actions = []
-        
-        obs_start = 0
-        for i, (actor, agent_state) in enumerate(zip(self.actors, state.agent_states)):
-            obs_end = obs_start + self.obs_dims[i]
-            agent_obs = next_observations[:, obs_start:obs_end]
-            
-            target_action = select_target_action(
-                actor, agent_state.target_actor_params, agent_obs
+        # observations: List of (obs_dim,) arrays -> stack to (n_agents, obs_dim)
+        obs_stacked = jnp.stack(observations)  # (n_agents, obs_dim)
+
+        actor = self.actor
+
+        if explore:
+            def select_one(k, actor_params, obs):
+                noise = state.noise_scale * random.normal(k, (self.action_dims[0],))
+                action = actor.apply(actor_params, obs[None], training=False)[0]
+                return jnp.clip(action + noise, -1.0, 1.0)
+            actions_stacked = jax.vmap(select_one)(
+                keys, state.agent_states.actor_params, obs_stacked
             )
-            target_actions.append(target_action)
-            
-            obs_start = obs_end
-        
-        return jnp.concatenate(target_actions, axis=-1)
-    
-    def store_transition(
-        self,
-        state: MADDPGState,
-        observations: List[jax.Array],
-        actions: List[jax.Array],
-        rewards: List[jax.Array],
-        next_observations: List[jax.Array],
-        dones: List[jax.Array],
-        global_state: Optional[jax.Array] = None,
-        next_global_state: Optional[jax.Array] = None,
-        log_probs: Optional[List[jax.Array]] = None,
-        action_priors: Optional[List[jax.Array]] = None,
-    ) -> MADDPGState:
-        """Store a transition in the replay buffer.
-        
-        Args:
-            state: Current MADDPG state
-            observations: List of observations for each agent
-            actions: List of actions for each agent
-            rewards: List of rewards for each agent
-            next_observations: List of next observations
-            dones: List of done flags
-            global_state: Optional global state
-            next_global_state: Optional next global state
-            log_probs: Optional log probabilities
-            action_priors: Optional prior actions
-            
-        Returns:
-            Updated MADDPGState
-        """
-        # Stack observations and actions per agent
-        # Need to pad to max dimensions if heterogeneous
-        max_obs_dim = self.buffer.obs_dim
-        max_action_dim = self.buffer.action_dim
-        
-        # Pad observations to max dim
-        obs_padded = []
-        for i, obs in enumerate(observations):
-            obs_flat = obs.flatten()
-            if len(obs_flat) < max_obs_dim:
-                obs_flat = jnp.pad(obs_flat, (0, max_obs_dim - len(obs_flat)))
-            obs_padded.append(obs_flat)
-        obs_stacked = jnp.stack(obs_padded)  # (n_agents, max_obs_dim)
-        
-        # Pad actions to max dim
-        actions_padded = []
-        for i, action in enumerate(actions):
-            action_flat = action.flatten()
-            if len(action_flat) < max_action_dim:
-                action_flat = jnp.pad(action_flat, (0, max_action_dim - len(action_flat)))
-            actions_padded.append(action_flat)
-        actions_stacked = jnp.stack(actions_padded)  # (n_agents, max_action_dim)
-        
-        # Pad next observations
-        next_obs_padded = []
-        for i, obs in enumerate(next_observations):
-            obs_flat = obs.flatten()
-            if len(obs_flat) < max_obs_dim:
-                obs_flat = jnp.pad(obs_flat, (0, max_obs_dim - len(obs_flat)))
-            next_obs_padded.append(obs_flat)
-        next_obs_stacked = jnp.stack(next_obs_padded)  # (n_agents, max_obs_dim)
-        
-        # Stack rewards and dones per agent
-        rewards_stacked = jnp.stack([
-            r.flatten()[0] if r.ndim > 0 else r for r in rewards
-        ])  # (n_agents,)
-        dones_stacked = jnp.stack([
-            d.flatten()[0] if d.ndim > 0 else d for d in dones
-        ])  # (n_agents,)
-        
-        # Handle optional log_probs
-        if log_probs is not None:
-            log_probs_stacked = jnp.stack([
-                lp.flatten()[0] if lp.ndim > 0 else lp for lp in log_probs
-            ])  # (n_agents,)
         else:
-            log_probs_stacked = None
-        
-        # Handle optional action_priors
-        if action_priors is not None:
-            priors_padded = []
-            for i, prior in enumerate(action_priors):
-                prior_flat = prior.flatten()
-                if len(prior_flat) < max_action_dim:
-                    prior_flat = jnp.pad(prior_flat, (0, max_action_dim - len(prior_flat)))
-                priors_padded.append(prior_flat)
-            action_priors_stacked = jnp.stack(priors_padded)  # (n_agents, max_action_dim)
-        else:
-            action_priors_stacked = None
-        
-        # Create transition
-        transition = Transition(
-            obs=obs_stacked,
-            actions=actions_stacked,
-            rewards=rewards_stacked,
-            next_obs=next_obs_stacked,
-            dones=dones_stacked,
-            global_state=global_state,
-            next_global_state=next_global_state,
-            log_probs=log_probs_stacked,
-            action_priors=action_priors_stacked,
-        )
-        
-        # Add to buffer
-        new_buffer_state = self.buffer.add(state.buffer_state, transition)
-        
-        return state.replace(buffer_state=new_buffer_state)
+            def select_one(actor_params, obs):
+                return actor.apply(actor_params, obs[None], training=False)[0]
+            actions_stacked = jax.vmap(select_one)(
+                state.agent_states.actor_params, obs_stacked
+            )
+
+        actions = [actions_stacked[i] for i in range(self.n_agents)]
+        log_probs = [jnp.zeros((1,))] * self.n_agents
+        # Gaussian noise is stateless — state is unchanged
+        return actions, log_probs, state
     
     def select_actions_batched(
         self,
@@ -552,56 +403,46 @@ class MADDPG:
             new_state: Updated state
         """
         n_envs = obs_batch.shape[0]
-        n_agents = self.n_agents
-        
-        # Generate keys for all envs and agents
-        keys = random.split(key, n_envs * n_agents).reshape(n_envs, n_agents, 2)
-        
-        # Process each agent (still loop over agents since they have different networks,
-        # but vectorize over environments)
-        all_actions = []
-        new_agent_states = []
-        
-        # Extract noise_scale once (outside of traced functions to avoid float() issues)
-        noise_scale_value = state.noise_scale
-        
-        for i, (actor, agent_state) in enumerate(zip(self.actors, state.agent_states)):
-            # obs for this agent across all envs: (n_envs, obs_dim)
-            agent_obs = obs_batch[:, i, :]
-            agent_keys = keys[:, i, :]  # (n_envs, 2) but we just need n_envs keys
-            
-            if explore:
-                # Vectorized action selection with noise across all envs
-                def select_single(key_obs):
-                    k, obs = key_obs
-                    action, _, _ = select_action_with_noise(
-                        key=k,
-                        actor=actor,
-                        actor_params=agent_state.actor_params,
-                        obs=obs,
-                        noise_scale=noise_scale_value,  # Pass JAX array directly
-                        noise_type='gaussian',
-                        noise_state=None,  # Gaussian doesn't need state
-                        epsilon=0.0,
-                        discrete_action=self.config.discrete_action,
-                    )
-                    return action
-                
-                # vmap over environments
-                agent_keys_flat = random.split(random.fold_in(key, i), n_envs)
-                actions = jax.vmap(select_single)((agent_keys_flat, agent_obs))
-            else:
-                # No noise - just apply actor to batch
-                actions = actor.apply(agent_state.actor_params, agent_obs, training=False)
-            
-            all_actions.append(actions)
-            new_agent_states.append(agent_state)
-        
-        # Stack: list of (n_envs, action_dim) -> (n_envs, n_agents, action_dim)
-        actions_batch = jnp.stack(all_actions, axis=1)
-        
-        new_state = state.replace(agent_states=new_agent_states)
-        return actions_batch, new_state
+        actor = self.actor
+        obs_dim_0 = self.obs_dims[0]
+        action_dim_0 = self.action_dims[0]
+
+        if explore:
+            # keys_flat: (n_envs * n_agents, 2) -> (n_envs, n_agents, 2)
+            keys_flat = random.split(key, n_envs * self.n_agents).reshape(
+                n_envs, self.n_agents, 2
+            )
+
+            def select_one_agent(actor_params, obs_all, keys_all):
+                # obs_all: (n_envs, obs_dim), keys_all: (n_envs, 2)
+                def select_single_env(k, obs):
+                    noise = state.noise_scale * random.normal(k, (action_dim_0,))
+                    action = actor.apply(actor_params, obs[None], training=False)[0]
+                    return jnp.clip(action + noise, -1.0, 1.0)
+                return jax.vmap(select_single_env)(keys_all, obs_all)
+
+            # vmap over agents: actor_params axis 0, obs axis 1 (n_agents), keys axis 1
+            actions_batch = jax.vmap(select_one_agent, in_axes=(0, 1, 1))(
+                state.agent_states.actor_params,
+                obs_batch[:, :, :obs_dim_0],
+                keys_flat,
+            )
+            # actions_batch: (n_agents, n_envs, action_dim) -> (n_envs, n_agents, action_dim)
+            actions_batch = actions_batch.transpose(1, 0, 2)
+        else:
+            def select_one_agent(actor_params, obs_all):
+                # obs_all: (n_envs, obs_dim)
+                return actor.apply(actor_params, obs_all, training=False)
+
+            actions_batch = jax.vmap(select_one_agent, in_axes=(0, 1))(
+                state.agent_states.actor_params,
+                obs_batch[:, :, :obs_dim_0],
+            )
+            # actions_batch: (n_agents, n_envs, action_dim) -> (n_envs, n_agents, action_dim)
+            actions_batch = actions_batch.transpose(1, 0, 2)
+
+        # Gaussian noise is stateless — state is unchanged
+        return actions_batch, state
     
     def store_transitions_batched(
         self,
@@ -647,251 +488,6 @@ class MADDPG:
         
         return state.replace(buffer_state=new_buffer_state)
 
-    def update(
-        self,
-        key: jax.Array,
-        state: MADDPGState,
-        action_priors: Optional[jax.Array] = None,
-    ) -> Tuple[MADDPGState, Dict[str, Any]]:
-        """Perform one update step for all agents.
-        
-        Supports both standard DDPG and TD3 modes based on config.use_td3.
-        
-        TD3 features:
-        - Twin critics (minimum Q-value for targets)
-        - Target policy smoothing (noise on target actions)
-        - Delayed policy updates (actor updated every policy_delay critic updates)
-        
-        Args:
-            key: JAX random key
-            state: Current MADDPG state
-            action_priors: Optional action priors for regularization
-            
-        Returns:
-            new_state: Updated state
-            info: Dictionary with training metrics
-        """
-        config = self.config
-        
-        # Check if we can update
-        can_update = self.buffer.can_sample(state.buffer_state, config.batch_size)
-        
-        if not can_update:
-            return state, {'can_update': False}
-        
-        # Sample from buffer - returns BatchTransition namedtuple
-        key, sample_key = random.split(key)
-        batch = self.buffer.sample(state.buffer_state, sample_key, config.batch_size)
-        
-        # batch.obs has shape (batch_size, n_agents, obs_dim)
-        # batch.actions has shape (batch_size, n_agents, action_dim)
-        # batch.rewards has shape (batch_size, n_agents)
-        # batch.dones has shape (batch_size, n_agents)
-        
-        # Flatten observations and actions for critic input
-        batch_size = batch.obs.shape[0]
-        
-        # Flatten per-agent obs to total_obs: (batch, n_agents * obs_dim)
-        obs_flat = batch.obs.reshape(batch_size, -1)  # (batch, n_agents * max_obs_dim)
-        next_obs_flat = batch.next_obs.reshape(batch_size, -1)
-        
-        # Flatten per-agent actions: (batch, n_agents * action_dim)
-        actions_flat = batch.actions.reshape(batch_size, -1)
-        
-        # Use global_state if available, else use flattened obs
-        if batch.global_state is not None:
-            global_states = batch.global_state
-            next_global_states = batch.next_global_state
-        else:
-            global_states = obs_flat
-            next_global_states = next_obs_flat
-        
-        # Compute target actions for all agents
-        # For TD3: add smoothing noise to target actions
-        target_actions_list = []
-        for i, (actor, agent_state) in enumerate(zip(self.actors, state.agent_states)):
-            key, target_key = random.split(key)
-            # Extract this agent's obs from batch: (batch, obs_dim)
-            agent_next_obs = batch.next_obs[:, i, :self.obs_dims[i]]
-            
-            if self.use_td3:
-                # TD3: Target policy smoothing
-                target_action = select_target_action_with_smoothing(
-                    target_key,
-                    actor, 
-                    agent_state.target_actor_params, 
-                    agent_next_obs,
-                    target_noise=self.target_noise,
-                    target_noise_clip=self.target_noise_clip,
-                )
-            else:
-                # Standard DDPG
-                target_action = select_target_action(
-                    actor, agent_state.target_actor_params, agent_next_obs
-                )
-            
-            # Pad if needed
-            if target_action.shape[-1] < self.buffer.action_dim:
-                target_action = jnp.pad(
-                    target_action, 
-                    ((0, 0), (0, self.buffer.action_dim - target_action.shape[-1]))
-                )
-            target_actions_list.append(target_action)
-        
-        # Stack and flatten target actions
-        target_actions = jnp.stack(target_actions_list, axis=1).reshape(batch_size, -1)
-        
-        # Update each agent
-        new_agent_states = list(state.agent_states)
-        info = {'can_update': True}
-        total_actor_loss = 0.0
-        total_critic_loss = 0.0
-        
-        # Determine if we should update actor (TD3: delayed policy updates)
-        current_step = int(state.step)
-        should_update_actor = not self.use_td3 or (current_step % self.policy_delay == 0)
-        
-        for agent_i in range(self.n_agents):
-            key, update_key = random.split(key)
-            
-            # Get this agent's data
-            agent_state = new_agent_states[agent_i]
-            actor = self.actors[agent_i]
-            critic = self.critics[agent_i]
-            
-            # Agent's observation from batch: (batch, obs_dim)
-            agent_obs = batch.obs[:, agent_i, :self.obs_dims[agent_i]]
-            
-            # Agent's reward: (batch, 1)
-            agent_reward = batch.rewards[:, agent_i:agent_i+1]
-            
-            # Done flag (use this agent's done)
-            agent_dones = batch.dones[:, agent_i:agent_i+1]
-            
-            # Update critic
-            key, critic_key = random.split(key)
-            if self.use_td3:
-                # TD3: Twin critic update
-                agent_state, critic_info = update_critic_td3(
-                    agent_state=agent_state,
-                    critic=critic,
-                    optimizer=self.critic_optimizer,
-                    global_obs=global_states,
-                    all_actions=actions_flat,
-                    rewards=agent_reward,
-                    next_global_obs=next_global_states,
-                    next_all_actions=target_actions,
-                    dones=agent_dones,
-                    gamma=config.gamma,
-                )
-            else:
-                # Standard DDPG critic update
-                agent_state, critic_info = update_critic(
-                    agent_state=agent_state,
-                    critic=critic,
-                    actor=actor,
-                    optimizer=self.critic_optimizer,
-                    global_obs=global_states,
-                    all_actions=actions_flat,
-                    rewards=agent_reward,
-                    next_global_obs=next_global_states,
-                    next_all_actions=target_actions,
-                    dones=agent_dones,
-                    gamma=config.gamma,
-                )
-            
-            # Update actor (conditionally for TD3 delayed updates)
-            actor_info = {'actor_loss': jnp.array(0.0)}
-            if should_update_actor:
-                # Need to construct other agents' actions
-                action_dim = self.buffer.action_dim
-                action_start = agent_i * action_dim
-                action_end = action_start + action_dim
-                
-                other_actions_before = actions_flat[:, :action_start]
-                other_actions_after = actions_flat[:, action_end:]
-                all_actions_except_agent = jnp.concatenate(
-                    [other_actions_before, other_actions_after], axis=-1
-                )
-                
-                # Get action prior for this agent if provided
-                agent_prior = None
-                if action_priors is not None:
-                    agent_prior = action_priors[:, action_start:action_end]
-                
-                key, actor_key = random.split(key)
-                if self.use_td3:
-                    # TD3: Actor update using Q1 only
-                    agent_state, actor_info = update_actor_td3(
-                        agent_state=agent_state,
-                        actor=actor,
-                        critic=critic,
-                        optimizer=self.actor_optimizer,
-                        global_obs=global_states,
-                        agent_obs=agent_obs,
-                        all_actions_except_agent=all_actions_except_agent,
-                        agent_action_idx=agent_i,
-                        action_dim=self.action_dims[agent_i],
-                        action_prior=agent_prior,
-                        prior_weight=config.prior_weight,
-                    )
-                else:
-                    # Standard DDPG actor update
-                    agent_state, actor_info = update_actor(
-                        agent_state=agent_state,
-                        actor=actor,
-                        critic=critic,
-                        optimizer=self.actor_optimizer,
-                        global_obs=global_states,
-                        agent_obs=agent_obs,
-                        all_actions_except_agent=all_actions_except_agent,
-                        agent_action_idx=agent_i,
-                        action_dim=self.action_dims[agent_i],
-                        action_prior=agent_prior,
-                        prior_weight=config.prior_weight,
-                    )
-            
-            new_agent_states[agent_i] = agent_state
-            
-            # Accumulate losses
-            total_actor_loss += float(actor_info['actor_loss'])
-            total_critic_loss += float(critic_info['critic_loss'])
-            
-            # Record info
-            info[f'agent_{agent_i}/critic_loss'] = critic_info['critic_loss']
-            info[f'agent_{agent_i}/actor_loss'] = actor_info['actor_loss']
-            info[f'agent_{agent_i}/q_value'] = critic_info['q_values']
-        
-        # Update all target networks (TD3: only when actor is updated for proper synchronization)
-        # Actually, in TD3 paper targets are always updated. Delayed updates only affect actor.
-        for i in range(self.n_agents):
-            new_agent_states[i] = update_targets(new_agent_states[i], config.tau)
-        
-        # Update noise scale
-        new_step = state.step + 1
-        new_noise_scale = get_noise_scale(
-            int(new_step),
-            config.noise_scale_initial,
-            config.noise_scale_final,
-            config.noise_decay_steps,
-            config.noise_schedule,
-        )
-        
-        new_state = state.replace(
-            agent_states=new_agent_states,
-            step=new_step,
-            noise_scale=jnp.array(new_noise_scale, dtype=jnp.float32),
-        )
-        
-        info['step'] = new_step
-        info['noise_scale'] = new_noise_scale
-        info['actor_loss'] = total_actor_loss / self.n_agents
-        info['critic_loss'] = total_critic_loss / self.n_agents
-        info['actor_updated'] = should_update_actor
-        info['use_td3'] = self.use_td3
-        
-        return new_state, info
-    
     def create_jit_update(self):
         """Create a JIT-compiled update function.
         
@@ -907,200 +503,190 @@ class MADDPG:
         """
         # Capture all necessary attributes in closure
         n_agents = self.n_agents
-        actors = self.actors
-        critics = self.critics
+        actor = self.actor
+        critic = self.critic
         buffer = self.buffer
         actor_optimizer = self.actor_optimizer
         critic_optimizer = self.critic_optimizer
         config = self.config
         obs_dims = self.obs_dims
         action_dims = self.action_dims
+        obs_dim_0 = self.obs_dims[0]
+        action_dim_0 = self.action_dims[0]
         use_td3 = self.use_td3
         policy_delay = self.policy_delay
         target_noise = self.target_noise
         target_noise_clip = self.target_noise_clip
-        
+
         @jax.jit
         def jit_update(
             key: jax.Array,
             state: MADDPGState,
         ) -> Tuple[MADDPGState, Dict[str, Any]]:
             """JIT-compiled update for all agents."""
-            
+
             # Check if we can update
             can_update = buffer.can_sample(state.buffer_state, config.batch_size)
-            
+
             def do_update(carry):
                 key, state = carry
-                
+
                 # Sample from buffer
                 key, sample_key = random.split(key)
                 batch = buffer.sample(state.buffer_state, sample_key, config.batch_size)
-                
+
                 batch_size = batch.obs.shape[0]
                 obs_flat = batch.obs.reshape(batch_size, -1)
                 next_obs_flat = batch.next_obs.reshape(batch_size, -1)
                 actions_flat = batch.actions.reshape(batch_size, -1)
-                
+
                 global_states = obs_flat
                 next_global_states = next_obs_flat
-                
-                # Compute target actions for all agents
-                # For TD3: add smoothing noise to target actions
-                target_actions_list = []
-                for i in range(n_agents):
-                    key, target_key = random.split(key)
-                    agent_next_obs = batch.next_obs[:, i, :obs_dims[i]]
-                    
-                    if use_td3:
-                        # TD3: Target policy smoothing
-                        target_action = select_target_action_with_smoothing(
-                            target_key,
-                            actors[i], 
-                            state.agent_states[i].target_actor_params, 
-                            agent_next_obs,
+
+                # --- Target actions (vmapped over agents) ---
+                target_keys = random.split(key, n_agents)  # (n_agents, 2)
+                # next_obs: (batch, n_agents, obs_dim) -> (n_agents, batch, obs_dim)
+                next_obs_per_agent = batch.next_obs[:, :, :obs_dim_0].transpose(1, 0, 2)
+
+                if use_td3:
+                    def compute_one_target(ag_state, agent_next_obs, tkey):
+                        return select_target_action_with_smoothing(
+                            tkey, actor, ag_state.target_actor_params, agent_next_obs,
                             target_noise=target_noise,
                             target_noise_clip=target_noise_clip,
                         )
-                    else:
-                        # Standard DDPG
-                        target_action = select_target_action(
-                            actors[i], state.agent_states[i].target_actor_params, agent_next_obs
+                else:
+                    def compute_one_target(ag_state, agent_next_obs, tkey):
+                        return select_target_action(
+                            actor, ag_state.target_actor_params, agent_next_obs
                         )
-                    
-                    if target_action.shape[-1] < buffer.action_dim:
-                        target_action = jnp.pad(
-                            target_action, 
-                            ((0, 0), (0, buffer.action_dim - target_action.shape[-1]))
+
+                # target_actions_stacked: (n_agents, batch, action_dim)
+                target_actions_stacked = jax.vmap(
+                    compute_one_target, in_axes=(0, 0, 0)
+                )(state.agent_states, next_obs_per_agent, target_keys)
+                # Flatten to (batch, n_agents * action_dim)
+                target_actions = target_actions_stacked.transpose(1, 0, 2).reshape(batch_size, -1)
+
+                # --- Critic update (vmapped over agents) ---
+                # rewards / dones: (batch, n_agents) -> (n_agents, batch, 1)
+                rewards_per_agent = batch.rewards.T[:, :, None]
+                dones_per_agent = batch.dones.T[:, :, None]
+
+                if use_td3:
+                    def update_one_critic(ag_state, rewards_i, dones_i):
+                        return update_critic_td3(
+                            agent_state=ag_state,
+                            critic=critic,
+                            optimizer=critic_optimizer,
+                            global_obs=global_states,
+                            all_actions=actions_flat,
+                            rewards=rewards_i,
+                            next_global_obs=next_global_states,
+                            next_all_actions=target_actions,
+                            dones=dones_i,
+                            gamma=config.gamma,
                         )
-                    target_actions_list.append(target_action)
-                
-                target_actions = jnp.stack(target_actions_list, axis=1).reshape(batch_size, -1)
-                
-                # Determine if we should update actor (TD3: delayed policy updates)
-                # Note: We use state.step which is the step BEFORE this update
+                else:
+                    def update_one_critic(ag_state, rewards_i, dones_i):
+                        return update_critic(
+                            agent_state=ag_state,
+                            critic=critic,
+                            actor=actor,
+                            optimizer=critic_optimizer,
+                            global_obs=global_states,
+                            all_actions=actions_flat,
+                            rewards=rewards_i,
+                            next_global_obs=next_global_states,
+                            next_all_actions=target_actions,
+                            dones=dones_i,
+                            gamma=config.gamma,
+                        )
+
+                new_agent_states, critic_infos = jax.vmap(
+                    update_one_critic, in_axes=(0, 0, 0)
+                )(state.agent_states, rewards_per_agent, dones_per_agent)
+                total_critic_loss = jnp.mean(critic_infos['critic_loss'])
+
+                # --- Actor update (vmapped, conditional on TD3 policy delay) ---
                 should_update_actor = jnp.logical_or(
                     jnp.logical_not(use_td3),
                     (state.step % policy_delay) == 0
                 )
-                
-                # Update all agents
-                new_agent_states = list(state.agent_states)
-                total_actor_loss = jnp.array(0.0)
-                total_critic_loss = jnp.array(0.0)
-                
-                for agent_i in range(n_agents):
-                    key, update_key = random.split(key)
-                    
-                    agent_state = new_agent_states[agent_i]
-                    agent_obs = batch.obs[:, agent_i, :obs_dims[agent_i]]
-                    agent_reward = batch.rewards[:, agent_i:agent_i+1]
-                    agent_dones = batch.dones[:, agent_i:agent_i+1]
-                    
-                    # Update critic (TD3 or standard DDPG)
-                    if use_td3:
-                        agent_state, critic_info = update_critic_td3(
-                            agent_state=agent_state,
-                            critic=critics[agent_i],
-                            optimizer=critic_optimizer,
+
+                # obs: (batch, n_agents, obs_dim) -> (n_agents, batch, obs_dim)
+                obs_per_agent = batch.obs[:, :, :obs_dim_0].transpose(1, 0, 2)
+                agent_indices = jnp.arange(n_agents, dtype=jnp.int32)
+
+                if config.prior_weight > 0 and batch.action_priors is not None:
+                    # (batch, n_agents, action_dim) -> (n_agents, batch, action_dim)
+                    priors_per_agent = batch.action_priors.transpose(1, 0, 2)
+                else:
+                    priors_per_agent = jnp.zeros((n_agents, batch_size, action_dim_0))
+
+                if use_td3:
+                    def update_one_actor(ag_state, obs_i, agent_idx, prior_i):
+                        return update_actor_td3(
+                            agent_state=ag_state,
+                            actor=actor,
+                            critic=critic,
+                            optimizer=actor_optimizer,
                             global_obs=global_states,
-                            all_actions=actions_flat,
-                            rewards=agent_reward,
-                            next_global_obs=next_global_states,
-                            next_all_actions=target_actions,
-                            dones=agent_dones,
-                            gamma=config.gamma,
+                            agent_obs=obs_i,
+                            all_actions_flat=actions_flat,
+                            agent_action_idx=agent_idx,
+                            action_dim=action_dim_0,
+                            action_prior=prior_i,
+                            prior_weight=config.prior_weight,
                         )
-                    else:
-                        agent_state, critic_info = update_critic(
-                            agent_state=agent_state,
-                            critic=critics[agent_i],
-                            actor=actors[agent_i],
-                            optimizer=critic_optimizer,
+                else:
+                    def update_one_actor(ag_state, obs_i, agent_idx, prior_i):
+                        return update_actor(
+                            agent_state=ag_state,
+                            actor=actor,
+                            critic=critic,
+                            optimizer=actor_optimizer,
                             global_obs=global_states,
-                            all_actions=actions_flat,
-                            rewards=agent_reward,
-                            next_global_obs=next_global_states,
-                            next_all_actions=target_actions,
-                            dones=agent_dones,
-                            gamma=config.gamma,
+                            agent_obs=obs_i,
+                            all_actions_flat=actions_flat,
+                            agent_action_idx=agent_idx,
+                            action_dim=action_dim_0,
+                            action_prior=prior_i,
+                            prior_weight=config.prior_weight,
                         )
-                    
-                    # Update actor (conditionally for TD3)
-                    action_dim = buffer.action_dim
-                    action_start = agent_i * action_dim
-                    action_end = action_start + action_dim
-                    
-                    all_actions_except_agent = jnp.concatenate([
-                        actions_flat[:, :action_start],
-                        actions_flat[:, action_end:]
-                    ], axis=-1)
-                    
-                    agent_prior = None
-                    if batch.action_priors is not None and config.prior_weight > 0:
-                        agent_prior = batch.action_priors[:, agent_i, :]
-                    
-                    # Actor update function
-                    def do_actor_update(state_and_info):
-                        ag_state, _ = state_and_info
-                        if use_td3:
-                            return update_actor_td3(
-                                agent_state=ag_state,
-                                actor=actors[agent_i],
-                                critic=critics[agent_i],
-                                optimizer=actor_optimizer,
-                                global_obs=global_states,
-                                agent_obs=agent_obs,
-                                all_actions_except_agent=all_actions_except_agent,
-                                agent_action_idx=agent_i,
-                                action_dim=action_dims[agent_i],
-                                action_prior=agent_prior,
-                                prior_weight=config.prior_weight,
-                            )
-                        else:
-                            return update_actor(
-                                agent_state=ag_state,
-                                actor=actors[agent_i],
-                                critic=critics[agent_i],
-                                optimizer=actor_optimizer,
-                                global_obs=global_states,
-                                agent_obs=agent_obs,
-                                all_actions_except_agent=all_actions_except_agent,
-                                agent_action_idx=agent_i,
-                                action_dim=action_dims[agent_i],
-                                action_prior=agent_prior,
-                                prior_weight=config.prior_weight,
-                            )
-                    
-                    def skip_actor_update(state_and_info):
-                        ag_state, _ = state_and_info
-                        # Return same structure as do_actor_update for jax.lax.cond compatibility
-                        dummy_info = {
-                            'actor_loss': jnp.array(0.0),
-                            'actor_grad_norm': jnp.array(0.0),
-                            'policy_loss': jnp.array(0.0),
-                            'reg_loss': jnp.array(0.0),
-                            'q_value_mean': jnp.array(0.0),
-                            'action_mean': jnp.array(0.0),
-                            'action_std': jnp.array(0.0),
-                        }
-                        return ag_state, dummy_info
-                    
-                    # Use lax.cond for conditional actor update (JAX-compatible)
-                    agent_state, actor_info = jax.lax.cond(
-                        should_update_actor,
-                        do_actor_update,
-                        skip_actor_update,
-                        (agent_state, None),
-                    )
-                    
-                    # Update targets
-                    agent_state = update_targets(agent_state, config.tau)
-                    new_agent_states[agent_i] = agent_state
-                    
-                    total_actor_loss = total_actor_loss + actor_info['actor_loss']
-                    total_critic_loss = total_critic_loss + critic_info['critic_loss']
-                
+
+                dummy_actor_infos = {
+                    'actor_loss': jnp.zeros(n_agents),
+                    'actor_grad_norm': jnp.zeros(n_agents),
+                    'policy_loss': jnp.zeros(n_agents),
+                    'reg_loss': jnp.zeros(n_agents),
+                    'q_value_mean': jnp.zeros(n_agents),
+                    'action_mean': jnp.zeros(n_agents),
+                    'action_std': jnp.zeros(n_agents),
+                }
+
+                def do_actor_updates(ag_states):
+                    updated_states, infos = jax.vmap(
+                        update_one_actor, in_axes=(0, 0, 0, 0)
+                    )(ag_states, obs_per_agent, agent_indices, priors_per_agent)
+                    return updated_states, infos
+
+                def skip_actor_updates(ag_states):
+                    return ag_states, dummy_actor_infos
+
+                new_agent_states, actor_infos = jax.lax.cond(
+                    should_update_actor,
+                    do_actor_updates,
+                    skip_actor_updates,
+                    new_agent_states,
+                )
+                total_actor_loss = jnp.mean(actor_infos['actor_loss'])
+
+                # --- Target network update (vmapped) ---
+                new_agent_states = jax.vmap(update_targets, in_axes=(0, None))(
+                    new_agent_states, config.tau
+                )
+
                 new_step = state.step + 1
                 # Note: noise_scale is managed by the training loop (based on total env steps),
                 # not here (which would be based on gradient update steps)
@@ -1108,46 +694,43 @@ class MADDPG:
                     agent_states=new_agent_states,
                     step=new_step,
                 )
-                
-                return new_state, total_actor_loss / n_agents, total_critic_loss / n_agents
-            
+
+                return new_state, total_actor_loss, total_critic_loss
+
             def skip_update(carry):
                 _, state = carry
                 return state, jnp.array(0.0), jnp.array(0.0)
-            
+
             new_state, actor_loss, critic_loss = jax.lax.cond(
                 can_update,
                 do_update,
                 skip_update,
                 (key, state),
             )
-            
+
             info = {
                 'can_update': can_update,
                 'actor_loss': actor_loss,
                 'critic_loss': critic_loss,
                 'buffer_size': state.buffer_state.size,
             }
-            
+
             return new_state, info
-        
+
         return jit_update
     
     def reset_noise(self, state: MADDPGState) -> MADDPGState:
         """Reset exploration noise for all agents.
-        
+
+        Gaussian noise is stateless, so there is nothing to reset.
+
         Args:
             state: Current state
-            
+
         Returns:
-            State with reset noise
+            State unchanged
         """
-        new_agent_states = []
-        for i, agent_state in enumerate(state.agent_states):
-            new_state = reset_noise(agent_state, self.action_dims[i])
-            new_agent_states.append(new_state)
-        
-        return state.replace(agent_states=new_agent_states)
+        return state  # Gaussian noise has no persistent state
     
     def increment_episode(self, state: MADDPGState) -> MADDPGState:
         """Increment episode counter and reset noise.
@@ -1170,8 +753,12 @@ class MADDPG:
         Returns:
             Dictionary of parameters
         """
-        agent_params = [get_agent_params(s) for s in state.agent_states]
-        
+        # Index into the stacked state to get per-agent params
+        agent_params = [
+            get_agent_params(jax.tree_util.tree_map(lambda x: x[i], state.agent_states))
+            for i in range(self.n_agents)
+        ]
+
         return {
             'agent_params': agent_params,
             'step': state.step,
@@ -1194,13 +781,19 @@ class MADDPG:
         Returns:
             State with loaded parameters
         """
-        new_agent_states = []
-        for agent_state, agent_params in zip(state.agent_states, params['agent_params']):
-            new_state = load_agent_params(agent_state, agent_params)
-            new_agent_states.append(new_state)
-        
+        # Load each agent's params into the stacked state by updating leaf-by-leaf
+        new_stacked = state.agent_states
+        for i, agent_params in enumerate(params['agent_params']):
+            ag_state_i = jax.tree_util.tree_map(lambda x: x[i], new_stacked)
+            ag_state_i = load_agent_params(ag_state_i, agent_params)
+            new_stacked = jax.tree_util.tree_map(
+                lambda stacked, updated: stacked.at[i].set(updated),
+                new_stacked,
+                ag_state_i,
+            )
+
         return state.replace(
-            agent_states=new_agent_states,
+            agent_states=new_stacked,
             step=params.get('step', state.step),
             episode=params.get('episode', state.episode),
             noise_scale=params.get('noise_scale', state.noise_scale),
@@ -1280,76 +873,3 @@ def make_maddpg_from_env(
     )
 
 
-# ============================================================================
-# Training Loop Utilities  
-# ============================================================================
-
-def train_step(
-    key: jax.Array,
-    maddpg: MADDPG,
-    state: MADDPGState,
-    env_state: Any,
-    env_step_fn: Callable,
-    env_params: Any,
-) -> Tuple[MADDPGState, Any, Dict[str, Any]]:
-    """Perform one training step.
-    
-    This is a utility function for a common training pattern.
-    
-    Args:
-        key: JAX random key
-        maddpg: MADDPG instance
-        state: MADDPG state
-        env_state: Environment state
-        env_step_fn: Function to step environment
-        env_params: Environment parameters
-        
-    Returns:
-        new_maddpg_state: Updated MADDPG state
-        new_env_state: Updated environment state
-        info: Training info
-    """
-    key, action_key, step_key, update_key = random.split(key, 4)
-    
-    # Get observations from env_state (environment-specific)
-    # This assumes env_state has an 'obs' attribute
-    observations = env_state.obs if hasattr(env_state, 'obs') else env_state
-    
-    # Select actions
-    actions, log_probs, state = maddpg.select_actions(
-        action_key, state, observations, explore=True
-    )
-    
-    # Step environment
-    next_obs, new_env_state, rewards, dones, env_info = env_step_fn(
-        step_key, env_state, actions, env_params
-    )
-    
-    # Store transition
-    state = maddpg.store_transition(
-        state=state,
-        observations=observations,
-        actions=actions,
-        rewards=rewards,
-        next_observations=next_obs,
-        dones=dones,
-        log_probs=log_probs,
-    )
-    
-    # Update if ready
-    info = {}
-    if state.step >= maddpg.config.warmup_steps:
-        if state.step % maddpg.config.update_every == 0:
-            for _ in range(maddpg.config.updates_per_step):
-                update_key, key = random.split(update_key)
-                state, update_info = maddpg.update(update_key, state)
-                info.update(update_info)
-    
-    # Handle episode end
-    if any(d for d in dones):
-        state = maddpg.increment_episode(state)
-    
-    info['step'] = state.step
-    info['episode'] = state.episode
-    
-    return state, new_env_state, info

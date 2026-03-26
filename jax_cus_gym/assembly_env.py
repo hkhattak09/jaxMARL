@@ -21,7 +21,7 @@ import flax.struct as struct
 
 from environment import MultiAgentEnv, EnvState
 from spaces import Box, MultiAgentActionSpace, MultiAgentObservationSpace
-from physics import PhysicsParams, physics_step
+from physics import PhysicsParams, physics_step, compute_pairwise_distances
 from observations import (
     ObservationParams,
     compute_observations,
@@ -30,6 +30,7 @@ from observations import (
 from rewards import (
     RewardParams,
     compute_rewards,
+    compute_agent_collisions,
     REWARD_MODE_INDIVIDUAL,
     REWARD_MODE_SHARED_MEAN,
     REWARD_MODE_SHARED_MAX,
@@ -388,10 +389,6 @@ class AssemblySwarmEnv(MultiAgentEnv):
             boundary_height=half_arena,
         )
         
-        # Clip velocities per-component (matches C++ MARL: np.clip(dp, -Vel_max, Vel_max))
-        # This clips each velocity component independently, not the magnitude
-        new_velocities = jnp.clip(new_velocities, -params.max_velocity, params.max_velocity)
-        
         # Update trajectory (circular buffer)
         new_traj_idx = (state.traj_idx + 1) % params.traj_len
         new_trajectory = state.trajectory.at[new_traj_idx].set(new_positions)
@@ -422,14 +419,20 @@ class AssemblySwarmEnv(MultiAgentEnv):
             is_colliding=state.is_colliding,
         )
         
-        # Update occupancy tracking
-        new_state = self._update_occupancy(new_state, params)
-        
+        # Compute pairwise distances once — reused by occupancy, neighbor finding, and rewards.
+        half_arena = params.arena_size / 2
+        pw_rel_pos, pw_distances, _ = compute_pairwise_distances(new_positions)
+        n = new_positions.shape[0]
+        _col_mat = (pw_distances < params.reward_params.collision_threshold) & ~jnp.eye(n, dtype=bool)
+        is_colliding = jnp.any(_col_mat, axis=1)
+
+        # Update occupancy tracking (uses pre-computed is_colliding)
+        new_state = self._update_occupancy(new_state, params, is_colliding)
+
         # Get observations
         obs = self._get_observations(new_state, params)
-        
-        # Compute rewards with occupancy info
-        half_arena = params.arena_size / 2
+
+        # Neighbor indices for rewards (reuses pre-computed distances/rel_pos)
         _, _, _, neighbor_indices = get_k_nearest_neighbors_all_agents(
             new_positions,
             new_velocities,
@@ -438,8 +441,10 @@ class AssemblySwarmEnv(MultiAgentEnv):
             False,  # is_periodic
             half_arena,
             half_arena,
+            precomputed_rel_pos=pw_rel_pos,
+            precomputed_distances=pw_distances,
         )
-        
+
         rewards, reward_info = compute_rewards(
             new_positions,
             new_velocities,
@@ -451,6 +456,7 @@ class AssemblySwarmEnv(MultiAgentEnv):
             half_arena,
             half_arena,
             params.d_sen,
+            precomputed_is_colliding=is_colliding,
         )
         
         # Apply reward sharing
@@ -584,36 +590,30 @@ class AssemblySwarmEnv(MultiAgentEnv):
         self,
         state: AssemblyState,
         params: AssemblyParams,
+        precomputed_is_colliding: jnp.ndarray,
     ) -> AssemblyState:
         """Update occupancy tracking."""
         # Distance from each agent to each grid cell
         agent_to_grid = state.grid_centers[None, :, :] - state.positions[:, None, :]
         agent_to_grid_dist = jnp.linalg.norm(agent_to_grid, axis=-1)
-        
+
         # In target threshold
         l_cell = state.l_cell
         in_target_threshold = jnp.sqrt(2.0) * l_cell / 2.0
-        
+
         # Check which agents are in any target cell
         in_cell = agent_to_grid_dist < in_target_threshold
         in_valid_cell = in_cell & state.grid_mask[None, :]
         in_target = jnp.any(in_valid_cell, axis=1)
-        
+
         # Grid cell is occupied if ANY agent is within r_avoid/2
         r_avoid = params.reward_params.collision_threshold
         occupied_by_any = jnp.any(agent_to_grid_dist < r_avoid / 2, axis=0)
         occupied_mask = occupied_by_any & state.grid_mask
-        
-        # Check collisions
-        from rewards import compute_agent_collisions
-        is_colliding, _ = compute_agent_collisions(
-            state.positions,
-            params.reward_params.collision_threshold,
-        )
-        
+
         return state.replace(
             in_target=in_target,
-            is_colliding=is_colliding,
+            is_colliding=precomputed_is_colliding,
             occupied_mask=occupied_mask,
         )
     

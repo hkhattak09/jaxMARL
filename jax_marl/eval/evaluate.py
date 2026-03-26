@@ -56,7 +56,6 @@ from assembly_env import (
     AssemblyState,
 )
 from shape_loader import load_shapes_from_pickle, ShapeLibrary
-from observations import compute_observation_dim
 
 
 # ============================================================================

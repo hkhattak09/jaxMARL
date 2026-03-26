@@ -618,68 +618,58 @@ def compute_actor_loss(
     critic_params: Any,
     global_obs: jax.Array,
     agent_obs: jax.Array,
-    all_actions_except_agent: jax.Array,
-    agent_action_idx: int,
+    all_actions_flat: jax.Array,
+    agent_action_idx: jax.Array,
     action_dim: int,
     action_prior: Optional[jax.Array] = None,
     prior_weight: float = 0.0,
 ) -> Tuple[jax.Array, Dict[str, jax.Array]]:
     """Compute actor (policy gradient) loss.
-    
+
     Loss = -E[Q(s, a)] + prior_weight * MSE(a, a_prior)
-    
+
     Args:
         actor: Actor network
         actor_params: Actor parameters
-        critic: Critic network  
+        critic: Critic network
         critic_params: Critic parameters (use current, not target)
         global_obs: Global observations for critic (batch, global_obs_dim)
         agent_obs: This agent's observations (batch, obs_dim)
-        all_actions_except_agent: Actions from all other agents (batch, total - action_dim)
-        agent_action_idx: Index to insert this agent's action
+        all_actions_flat: Full flattened actions for all agents (batch, n_agents * action_dim)
+        agent_action_idx: Traced scalar index to insert this agent's action
         action_dim: This agent's action dimension
         action_prior: Prior actions for regularization (optional)
         prior_weight: Weight for prior regularization
-        
+
     Returns:
         loss: Scalar loss value
         info: Dict with additional info
     """
     # Get current policy action
     policy_action = actor.apply(actor_params, agent_obs, training=True)
-    
-    # Construct full action vector for critic
-    # Insert this agent's action at the correct position
-    batch_size = agent_obs.shape[0]
-    
-    # Build all_actions by inserting this agent's action at correct position
-    # all_actions_except_agent has shape (batch, total_action_dim - action_dim)
-    # We need to insert policy_action at position agent_action_idx * action_dim
-    
-    if all_actions_except_agent is not None and all_actions_except_agent.shape[-1] > 0:
-        # Split and insert agent's action at correct position
-        insert_idx = agent_action_idx * action_dim
-        before = all_actions_except_agent[:, :insert_idx]
-        after = all_actions_except_agent[:, insert_idx:]
-        all_actions = jnp.concatenate([before, policy_action, after], axis=-1)
-    else:
-        all_actions = policy_action
-    
+
+    # Insert this agent's policy action at the correct position in the flat action vector
+    # using dynamic_update_slice so the index can be a traced value (vmap-compatible)
+    insert_start = agent_action_idx * action_dim
+    all_actions = jax.vmap(
+        lambda row, p: jax.lax.dynamic_update_slice(row, p, (insert_start,))
+    )(all_actions_flat, policy_action)
+
     # Q-value (we want to maximize, so negate for loss)
     # Critic takes (obs, action) separately
     q_value = critic.apply(critic_params, global_obs, all_actions)
     policy_loss = -jnp.mean(q_value)
-    
+
     # Prior regularization
     reg_loss = jnp.array(0.0)
-    if action_prior is not None and prior_weight > 0:
+    if prior_weight > 0:
         # Only compute for valid priors (non-zero)
         valid_mask = jnp.any(jnp.abs(action_prior) > 1e-6, axis=-1, keepdims=True)
         mse = jnp.sum((policy_action - action_prior) ** 2, axis=-1, keepdims=True)
         reg_loss = jnp.sum(mse * valid_mask) / (jnp.sum(valid_mask) + 1e-8)
-    
+
     loss = policy_loss + prior_weight * reg_loss
-    
+
     info = {
         'policy_loss': policy_loss,
         'reg_loss': reg_loss,
@@ -687,7 +677,7 @@ def compute_actor_loss(
         'action_mean': jnp.mean(policy_action),
         'action_std': jnp.std(policy_action),
     }
-    
+
     return loss, info
 
 
@@ -698,61 +688,57 @@ def compute_actor_loss_td3(
     critic_params: Any,
     global_obs: jax.Array,
     agent_obs: jax.Array,
-    all_actions_except_agent: jax.Array,
-    agent_action_idx: int,
+    all_actions_flat: jax.Array,
+    agent_action_idx: jax.Array,
     action_dim: int,
     action_prior: Optional[jax.Array] = None,
     prior_weight: float = 0.0,
 ) -> Tuple[jax.Array, Dict[str, jax.Array]]:
     """Compute actor loss for TD3 (uses only Q1 from twin critics).
-    
+
     Loss = -E[Q1(s, a)] + prior_weight * MSE(a, a_prior)
-    
+
     Args:
         actor: Actor network
         actor_params: Actor parameters
-        critic: CriticTwin network  
+        critic: CriticTwin network
         critic_params: Critic parameters (use current, not target)
         global_obs: Global observations for critic (batch, global_obs_dim)
         agent_obs: This agent's observations (batch, obs_dim)
-        all_actions_except_agent: Actions from all other agents
-        agent_action_idx: Index to insert this agent's action
+        all_actions_flat: Full flattened actions for all agents (batch, n_agents * action_dim)
+        agent_action_idx: Traced scalar index to insert this agent's action
         action_dim: This agent's action dimension
         action_prior: Prior actions for regularization (optional)
         prior_weight: Weight for prior regularization
-        
+
     Returns:
         loss: Scalar loss value
         info: Dict with additional info
     """
     # Get current policy action
     policy_action = actor.apply(actor_params, agent_obs, training=True)
-    
-    # Construct full action vector for critic
-    batch_size = agent_obs.shape[0]
-    
-    if all_actions_except_agent is not None and all_actions_except_agent.shape[-1] > 0:
-        insert_idx = agent_action_idx * action_dim
-        before = all_actions_except_agent[:, :insert_idx]
-        after = all_actions_except_agent[:, insert_idx:]
-        all_actions = jnp.concatenate([before, policy_action, after], axis=-1)
-    else:
-        all_actions = policy_action
-    
+
+    # Insert this agent's policy action at the correct position in the flat action vector
+    # using dynamic_update_slice so the index can be a traced value (vmap-compatible)
+    insert_start = agent_action_idx * action_dim
+    all_actions = jax.vmap(
+        lambda row, p: jax.lax.dynamic_update_slice(row, p, (insert_start,))
+    )(all_actions_flat, policy_action)
+
     # Use only Q1 for policy gradient (TD3 requirement)
     # CriticTwin returns (q1, q2), we take only q1
     q1_value, _ = critic.apply(critic_params, global_obs, all_actions)
     policy_loss = -jnp.mean(q1_value)
-    
+
     # Prior regularization
     reg_loss = jnp.array(0.0)
-    if action_prior is not None and prior_weight > 0:
+    if prior_weight > 0:
         valid_mask = jnp.any(jnp.abs(action_prior) > 1e-6, axis=-1, keepdims=True)
         mse = jnp.sum((policy_action - action_prior) ** 2, axis=-1, keepdims=True)
         reg_loss = jnp.sum(mse * valid_mask) / (jnp.sum(valid_mask) + 1e-8)
-    
+
     loss = policy_loss + prior_weight * reg_loss
-    
+
     info = {
         'policy_loss': policy_loss,
         'reg_loss': reg_loss,
@@ -760,7 +746,7 @@ def compute_actor_loss_td3(
         'action_mean': jnp.mean(policy_action),
         'action_std': jnp.std(policy_action),
     }
-    
+
     return loss, info
 
 
@@ -835,14 +821,14 @@ def update_actor(
     optimizer: optax.GradientTransformation,
     global_obs: jax.Array,
     agent_obs: jax.Array,
-    all_actions_except_agent: jax.Array,
-    agent_action_idx: int,
+    all_actions_flat: jax.Array,
+    agent_action_idx: jax.Array,
     action_dim: int,
     action_prior: Optional[jax.Array] = None,
     prior_weight: float = 0.0,
 ) -> Tuple[DDPGAgentState, Dict[str, jax.Array]]:
     """Update actor network.
-    
+
     Args:
         agent_state: Current agent state
         actor: Actor network
@@ -850,12 +836,12 @@ def update_actor(
         optimizer: Actor optimizer
         global_obs: Global observations for critic
         agent_obs: This agent's observations
-        all_actions_except_agent: Actions from other agents
-        agent_action_idx: Index for this agent's action
+        all_actions_flat: Full flattened actions for all agents (batch, n_agents * action_dim)
+        agent_action_idx: Traced scalar index for this agent's action slot
         action_dim: This agent's action dimension
         action_prior: Optional prior actions
         prior_weight: Weight for prior regularization
-        
+
     Returns:
         new_agent_state: Updated agent state
         info: Training info dict
@@ -868,7 +854,7 @@ def update_actor(
             critic_params=agent_state.critic_params,  # Use current critic
             global_obs=global_obs,
             agent_obs=agent_obs,
-            all_actions_except_agent=all_actions_except_agent,
+            all_actions_flat=all_actions_flat,
             agent_action_idx=agent_action_idx,
             action_dim=action_dim,
             action_prior=action_prior,
@@ -958,14 +944,14 @@ def update_actor_td3(
     optimizer: optax.GradientTransformation,
     global_obs: jax.Array,
     agent_obs: jax.Array,
-    all_actions_except_agent: jax.Array,
-    agent_action_idx: int,
+    all_actions_flat: jax.Array,
+    agent_action_idx: jax.Array,
     action_dim: int,
     action_prior: Optional[jax.Array] = None,
     prior_weight: float = 0.0,
 ) -> Tuple[DDPGAgentState, Dict[str, jax.Array]]:
     """Update actor network using TD3 (uses Q1 only).
-    
+
     Args:
         agent_state: Current agent state
         actor: Actor network
@@ -973,12 +959,12 @@ def update_actor_td3(
         optimizer: Actor optimizer
         global_obs: Global observations for critic
         agent_obs: This agent's observations
-        all_actions_except_agent: Actions from other agents
-        agent_action_idx: Index for this agent's action
+        all_actions_flat: Full flattened actions for all agents (batch, n_agents * action_dim)
+        agent_action_idx: Traced scalar index for this agent's action slot
         action_dim: This agent's action dimension
         action_prior: Optional prior actions
         prior_weight: Weight for prior regularization
-        
+
     Returns:
         new_agent_state: Updated agent state
         info: Training info dict
@@ -991,7 +977,7 @@ def update_actor_td3(
             critic_params=agent_state.critic_params,
             global_obs=global_obs,
             agent_obs=agent_obs,
-            all_actions_except_agent=all_actions_except_agent,
+            all_actions_flat=all_actions_flat,
             agent_action_idx=agent_action_idx,
             action_dim=action_dim,
             action_prior=action_prior,

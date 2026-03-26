@@ -35,7 +35,9 @@ class AssemblyTrainConfig(NamedTuple):
     
     # Observation
     k_neighbors: int = 6                # Number of nearest neighbors to observe
-    d_sen: float = 0.4                  # Sensing distance (matches MARL-LLM reset value)
+    d_sen: float = 0.5                  # Sensing distance. Original MARL-LLM used 0.4 for 30 agents
+                                        # in a 4.8×4.8 arena (spacing ~0.87, ratio d_sen/spacing≈0.46).
+                                        # Scaled to 20 agents in 5.0×5.0 (spacing ~1.12): 0.46×1.12≈0.51→0.5
     include_self_state: bool = True     # Include own position/velocity
     
     # Physics
@@ -229,7 +231,7 @@ config = AssemblyTrainConfig(
     max_acceleration=1.0,
     # Observation
     k_neighbors=6,
-    d_sen=0.4,
+    d_sen=0.5,
     include_self_state=True,
     # Physics
     dt=0.1,

@@ -14,11 +14,12 @@ Quick Start:
     # Select actions (with exploration)
     actions, log_probs, state = maddpg.select_actions(key, state, observations)
     
-    # Store transition
-    state = maddpg.store_transition(state, obs, actions, rewards, next_obs, dones)
-    
-    # Update networks
-    state, info = maddpg.update(key, state)
+    # Store transitions (batched)
+    state = maddpg.store_transitions_batched(state, obs, actions, rewards, next_obs, dones)
+
+    # JIT-compiled update
+    jit_update = maddpg.create_jit_update()
+    state, info = jit_update(state, key)
 
 Modules:
     - maddpg: Main MADDPG coordinator class

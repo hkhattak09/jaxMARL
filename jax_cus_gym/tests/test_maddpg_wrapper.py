@@ -41,7 +41,6 @@ from maddpg_wrapper import (
     Transition,
     create_maddpg_env,
     create_vec_maddpg_env,
-    rollout_episode,
     stack_transitions,
 )
 
@@ -267,44 +266,24 @@ def test_convenience_functions():
     print("  ✓ Convenience functions tests passed")
 
 
-def test_rollout_episode():
-    """Test episode rollout with actual shapes."""
-    print("Testing episode rollout...")
-    
-    kwargs = {'shape_file': FIG_SHAPES_PATH} if FIG_SHAPES_PATH else {}
-    wrapper = MADDPGWrapper(n_agents=4, max_steps=20, **kwargs)
-    
-    # Simple random policy
-    def random_policy(key, obs):
-        return random.uniform(key, (4, 2), minval=-1, maxval=1)
-    
-    key = random.PRNGKey(42)
-    transitions, episode_info = rollout_episode(wrapper, key, random_policy)
-    
-    assert len(transitions) > 0
-    assert len(transitions) <= 20
-    assert "episode_return" in episode_info
-    assert "episode_length" in episode_info
-    
-    print(f"  Episode length: {episode_info['episode_length']}")
-    print(f"  Episode return: {episode_info['episode_return']:.2f}")
-    
-    print("  ✓ Episode rollout tests passed")
-
-
 def test_stack_transitions():
     """Test transition stacking with actual shapes."""
     print("Testing transition stacking...")
-    
+
     kwargs = {'shape_file': FIG_SHAPES_PATH} if FIG_SHAPES_PATH else {}
     wrapper = MADDPGWrapper(n_agents=3, **kwargs)
-    
-    def random_policy(key, obs):
-        return random.uniform(key, (3, 2), minval=-1, maxval=1)
-    
     key = random.PRNGKey(0)
-    transitions, _ = rollout_episode(wrapper, key, random_policy, max_steps=10)
-    
+    obs, state = wrapper.reset(key)
+
+    transitions = []
+    for _ in range(10):
+        key, action_key, step_key = random.split(key, 3)
+        actions = random.uniform(action_key, (3, 2), minval=-1, maxval=1)
+        next_obs, next_state, rewards, dones, info = wrapper.step(step_key, state, actions)
+        transition = wrapper.collect_transition(obs, actions, rewards, next_obs, dones, state, next_state)
+        transitions.append(transition)
+        obs, state = next_obs, next_state
+
     batched = stack_transitions(transitions)
     
     assert batched.obs.shape[0] == len(transitions)
@@ -437,7 +416,6 @@ if __name__ == "__main__":
     test_vectorized_step()
     test_vectorized_global_states()
     test_convenience_functions()
-    test_rollout_episode()
     test_stack_transitions()
     test_jit_compatibility()
     test_custom_params()

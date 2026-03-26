@@ -13,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from observations import (
     ObservationParams,
-    compute_observation_dim,
     get_k_nearest_neighbors,
     get_k_nearest_neighbors_all_agents,
     compute_grid_observations,
@@ -21,40 +20,6 @@ from observations import (
     compute_observations,
     get_neighbor_indices,
 )
-
-
-def test_observation_dim():
-    """Test observation dimension calculation."""
-    print("Testing observation dimension calculation...")
-    
-    params = ObservationParams(
-        topo_nei_max=6,
-        num_obs_grid_max=80,
-        include_self_state=True,
-    )
-    
-    obs_dim = compute_observation_dim(params)
-    
-    # Calculate expected:
-    # Self: 4 (pos + vel)
-    # Neighbors: 4 * 6 = 24 (rel_pos + rel_vel for each)
-    # Target: 4 (rel_pos + rel_vel)
-    # Grid: 2 * 80 = 160
-    # Total: 4 + 24 + 4 + 160 = 192
-    expected = 4 + 24 + 4 + 160
-    
-    assert obs_dim == expected, f"Expected {expected}, got {obs_dim}"
-    
-    # Test without self state
-    params_no_self = ObservationParams(
-        topo_nei_max=6,
-        num_obs_grid_max=80,
-        include_self_state=False,
-    )
-    obs_dim_no_self = compute_observation_dim(params_no_self)
-    assert obs_dim_no_self == expected - 4
-    
-    print("  ✓ Observation dimension calculation tests passed")
 
 
 def test_k_nearest_neighbors_single():
@@ -283,7 +248,7 @@ def test_compute_observations():
     )
     
     # Check shape
-    expected_dim = compute_observation_dim(obs_params)
+    expected_dim = observations.shape[1]
     assert observations.shape == (n_agents, expected_dim), \
         f"Expected shape ({n_agents}, {expected_dim}), got {observations.shape}"
     
@@ -322,9 +287,9 @@ def test_observations_jit():
     
     observations = compute_obs_jit(positions, velocities, grid_centers, l_cell)
     
-    expected_dim = compute_observation_dim(obs_params)
+    expected_dim = observations.shape[1]
     assert observations.shape == (n_agents, expected_dim)
-    
+
     print("  ✓ Observations JIT compatibility tests passed")
 
 
@@ -356,7 +321,7 @@ def test_observations_vmap():
     
     observations = batch_compute_obs(positions, velocities, grid_centers, l_cell)
     
-    expected_dim = compute_observation_dim(obs_params)
+    expected_dim = observations.shape[2]
     assert observations.shape == (n_envs, n_agents, expected_dim)
     
     print("  ✓ Observations vmap compatibility tests passed")

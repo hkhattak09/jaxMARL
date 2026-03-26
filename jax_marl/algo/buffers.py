@@ -18,12 +18,11 @@ The buffer stores transitions in the format used by maddpg_wrapper.py:
 - global_state: (global_state_dim,) for centralized critic
 """
 
-from typing import Tuple, Optional, NamedTuple, Dict, Any, Union
+from typing import Tuple, Optional, NamedTuple
 import jax
 import jax.numpy as jnp
-from jax import random, lax
+from jax import random
 from flax import struct
-from functools import partial
 
 
 # ============================================================================
@@ -412,64 +411,6 @@ class ReplayBuffer:
             action_priors=action_priors,
         )
     
-    def sample_without_replacement(
-        self,
-        state: ReplayBufferState,
-        key: jax.Array,
-        batch_size: int,
-    ) -> BatchTransition:
-        """Sample a batch without replacement (no duplicate samples).
-        
-        More expensive than regular sampling but avoids duplicates.
-        Important for small buffers or when exact batch statistics matter.
-        
-        Args:
-            state: Current buffer state
-            key: JAX random key
-            batch_size: Number of transitions to sample
-            
-        Returns:
-            BatchTransition with sampled data (no duplicates)
-        """
-        # Use permutation to sample without replacement
-        indices = random.permutation(key, state.size)[:batch_size]
-        
-        # Gather sampled transitions
-        obs = state.obs[indices]
-        actions = state.actions[indices]
-        rewards = state.rewards[indices]
-        next_obs = state.next_obs[indices]
-        dones = state.dones[indices]
-        
-        if self.use_global_state:
-            global_state = state.global_state[indices]
-            next_global_state = state.next_global_state[indices]
-        else:
-            global_state = None
-            next_global_state = None
-        
-        if self.store_log_probs:
-            log_probs = state.log_probs[indices]
-        else:
-            log_probs = None
-            
-        if self.store_action_priors:
-            action_priors = state.action_priors[indices]
-        else:
-            action_priors = None
-        
-        return BatchTransition(
-            obs=obs,
-            actions=actions,
-            rewards=rewards,
-            next_obs=next_obs,
-            dones=dones,
-            global_state=global_state,
-            next_global_state=next_global_state,
-            log_probs=log_probs,
-            action_priors=action_priors,
-        )
-    
     def can_sample(self, state: ReplayBufferState, batch_size: int) -> jnp.ndarray:
         """Check if buffer has enough samples (JIT-compatible).
         
@@ -509,32 +450,6 @@ class ReplayBuffer:
             size=jnp.array(0, dtype=jnp.int32),
         )
     
-    def get_average_rewards(
-        self, 
-        state: ReplayBufferState, 
-        n_recent: Optional[int] = None,
-    ) -> jnp.ndarray:
-        """Calculate average rewards over recent transitions.
-        
-        Useful for monitoring training progress.
-        
-        Args:
-            state: Current buffer state
-            n_recent: Number of recent transitions to average (default: all)
-            
-        Returns:
-            Average rewards per agent (n_agents,)
-        """
-        if n_recent is None:
-            n_recent = state.size
-        
-        # Calculate start index for recent transitions
-        # Handle circular buffer case
-        n_to_avg = jnp.minimum(n_recent, state.size)
-        
-        # For simplicity, compute mean over all stored (up to size)
-        # This is an approximation - exact recent would need circular handling
-        return jnp.mean(state.rewards[:state.size], axis=0)
 
 
 # ============================================================================

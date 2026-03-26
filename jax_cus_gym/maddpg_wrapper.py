@@ -179,14 +179,17 @@ class MADDPGWrapper:
             key, state.env_state, actions, self.params
         )
         
+        new_episode_returns = state.episode_returns + rewards
         new_state = MADDPGState(
             env_state=env_state,
-            episode_returns=state.episode_returns + rewards,
+            # Reset accumulator when done so next episode starts from zero.
+            # new_episode_returns still holds the completed episode total for logging.
+            episode_returns=new_episode_returns * (1.0 - dones.astype(jnp.float32)),
             episode_length=state.episode_length + 1,
         )
-        
-        # Add episode info
-        info["episode_returns"] = new_state.episode_returns
+
+        # Log the completed episode total (pre-reset), not the post-reset zeros.
+        info["episode_returns"] = new_episode_returns
         info["episode_length"] = new_state.episode_length
         
         return obs, new_state, rewards, dones, info
@@ -416,67 +419,6 @@ def create_vec_maddpg_env(
         VectorizedMADDPGWrapper instance
     """
     return VectorizedMADDPGWrapper(n_envs=n_envs, n_agents=n_agents, **kwargs)
-
-
-def rollout_episode(
-    wrapper: MADDPGWrapper,
-    key: jnp.ndarray,
-    policy_fn,
-    max_steps: Optional[int] = None,
-) -> Tuple[List[Transition], Dict]:
-    """Rollout a full episode and collect transitions.
-    
-    Args:
-        wrapper: MADDPG wrapper
-        key: Random key
-        policy_fn: Function that takes (key, obs) and returns actions
-        max_steps: Maximum steps (default: from params)
-        
-    Returns:
-        transitions: List of Transition tuples
-        info: Episode info (returns, length, etc.)
-    """
-    if max_steps is None:
-        max_steps = wrapper.params.max_steps
-    
-    key, reset_key = random.split(key)
-    obs, state = wrapper.reset(reset_key)
-    
-    transitions = []
-    
-    for _ in range(max_steps):
-        key, action_key, step_key = random.split(key, 3)
-        
-        # Get actions from policy
-        actions = policy_fn(action_key, obs)
-        
-        # Step environment
-        next_obs, next_state, rewards, dones, info = wrapper.step(
-            step_key, state, actions
-        )
-        
-        # Collect transition
-        transition = wrapper.collect_transition(
-            obs, actions, rewards, next_obs, dones,
-            state, next_state
-        )
-        transitions.append(transition)
-        
-        # Check if done
-        if next_state.env_state.done:
-            break
-        
-        obs = next_obs
-        state = next_state
-    
-    episode_info = {
-        "episode_return": float(jnp.sum(state.episode_returns)),
-        "episode_length": state.episode_length,
-        "mean_agent_return": float(jnp.mean(state.episode_returns)),
-        "final_coverage": float(info.get("coverage_rate", 0.0)),
-    }
-    
-    return transitions, episode_info
 
 
 def stack_transitions(transitions: List[Transition]) -> Transition:

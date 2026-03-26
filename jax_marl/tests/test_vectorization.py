@@ -313,12 +313,6 @@ def test_maddpg():
     assert actions_batch_no_noise.shape == (TEST_N_ENVS, TEST_N_AGENTS, TEST_ACTION_DIM)
     print_success(f"select_actions_batched (no explore): output {actions_batch_no_noise.shape}")
     
-    # Test original store_transition
-    rewards_list = [jnp.array([0.5]) for _ in range(TEST_N_AGENTS)]
-    dones_list = [jnp.array([False]) for _ in range(TEST_N_AGENTS)]
-    state = maddpg.store_transition(state, obs_list, actions, rewards_list, obs_list, dones_list)
-    print_success(f"store_transition: buffer size = {state.buffer_state.size}")
-    
     # Test NEW batched store_transitions (KEY VECTORIZATION TEST)
     rewards_batch = jnp.ones((TEST_N_ENVS, TEST_N_AGENTS))
     dones_batch = jnp.zeros((TEST_N_ENVS, TEST_N_AGENTS))
@@ -344,7 +338,8 @@ def test_maddpg():
     
     # Test update
     key, update_key = random.split(key)
-    state, info = maddpg.update(update_key, state)
+    jit_update = maddpg.create_jit_update()
+    state, info = jit_update(state, update_key)
     assert info.get('can_update', False), "Update should have succeeded"
     print_success(f"MADDPG update: info keys = {list(info.keys())[:5]}...")
     
@@ -505,20 +500,19 @@ def test_observations():
     """Test observation computation."""
     print_test_header("Observations (jax_cus_gym/observations.py)")
     
-    from observations import compute_observation_dim, ObservationParams
+    from observations import ObservationParams
     from assembly_env import AssemblySwarmEnv, AssemblyParams
-    
+
     # Use default ObservationParams
     obs_params = ObservationParams()
-    
-    obs_dim = compute_observation_dim(obs_params)
-    print_success(f"Observation dimension: {obs_dim}")
-    
+
     env = AssemblySwarmEnv(n_agents=TEST_N_AGENTS)
     params = AssemblyParams(obs_params=obs_params)
-    
+
     key = random.PRNGKey(0)
     obs, state = env.reset(key, params)
+    obs_dim = obs.shape[-1]
+    print_success(f"Observation dimension: {obs_dim}")
     
     # obs shape is (n_agents, actual_obs_dim) where actual_obs_dim comes from environment
     assert obs.shape[0] == TEST_N_AGENTS
@@ -715,8 +709,6 @@ def test_training_integration():
     
     from algo.maddpg import MADDPG, MADDPGConfig
     from assembly_env import make_vec_env, AssemblyParams, compute_prior_policy
-    from observations import compute_observation_dim
-    
     # Setup
     n_agents = TEST_N_AGENTS
     n_envs = TEST_N_ENVS
@@ -807,8 +799,9 @@ def test_training_integration():
     
     # Try update
     key, update_key = random.split(key)
-    maddpg_state, update_info = maddpg.update(update_key, maddpg_state)
-    
+    jit_update = maddpg.create_jit_update()
+    maddpg_state, update_info = jit_update(maddpg_state, update_key)
+
     if update_info.get('can_update', True):
         print_success(f"Update performed successfully")
     else:

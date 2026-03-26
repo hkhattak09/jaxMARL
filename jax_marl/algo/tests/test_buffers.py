@@ -590,33 +590,6 @@ class TestNewFeatures:
         assert batch.action_priors is not None
         assert batch.action_priors.shape == (1, config['n_agents'], config['action_dim'])
     
-    def test_sample_without_replacement(self, replay_buffer, buffer_state, sample_transition, key):
-        """Test sampling without replacement."""
-        state = buffer_state
-        
-        # Fill buffer with unique values
-        for i in range(100):
-            key, subkey = random.split(key)
-            transition = Transition(
-                obs=jnp.ones_like(sample_transition.obs) * i,  # Unique identifier
-                actions=random.uniform(subkey, sample_transition.actions.shape),
-                rewards=random.normal(subkey, sample_transition.rewards.shape),
-                next_obs=random.normal(subkey, sample_transition.next_obs.shape),
-                dones=jnp.zeros_like(sample_transition.dones),
-                global_state=random.normal(subkey, sample_transition.global_state.shape),
-                next_global_state=random.normal(subkey, sample_transition.next_global_state.shape),
-            )
-            state = replay_buffer.add(state, transition)
-        
-        # Sample without replacement
-        key, sample_key = random.split(key)
-        batch = replay_buffer.sample_without_replacement(state, sample_key, 50)
-        
-        # Check no duplicates by looking at obs values (each is unique)
-        obs_sums = batch.obs.sum(axis=(1, 2))  # Should all be different
-        unique_count = len(jnp.unique(obs_sums))
-        assert unique_count == 50  # All samples should be unique
-    
     def test_reset(self, replay_buffer, buffer_state, sample_transition):
         """Test buffer reset."""
         state = buffer_state
@@ -635,30 +608,6 @@ class TestNewFeatures:
         assert int(reset_state.position) == 0
         # Data arrays should still exist (not reallocated)
         assert reset_state.obs.shape == state.obs.shape
-    
-    def test_get_average_rewards(self, replay_buffer, buffer_state, sample_transition, key):
-        """Test average rewards calculation."""
-        state = buffer_state
-        
-        # Add transitions with known rewards
-        for i in range(20):
-            key, subkey = random.split(key)
-            transition = Transition(
-                obs=random.normal(subkey, sample_transition.obs.shape),
-                actions=random.uniform(subkey, sample_transition.actions.shape),
-                rewards=jnp.ones_like(sample_transition.rewards) * i,  # rewards = i
-                next_obs=random.normal(subkey, sample_transition.next_obs.shape),
-                dones=jnp.zeros_like(sample_transition.dones),
-                global_state=random.normal(subkey, sample_transition.global_state.shape),
-                next_global_state=random.normal(subkey, sample_transition.next_global_state.shape),
-            )
-            state = replay_buffer.add(state, transition)
-        
-        avg_rewards = replay_buffer.get_average_rewards(state)
-        
-        # Average of 0..19 is 9.5
-        assert avg_rewards.shape == (5,)  # n_agents
-        assert jnp.allclose(avg_rewards, 9.5)
     
     def test_dtype_specification(self, buffer_config):
         """Test custom dtype."""

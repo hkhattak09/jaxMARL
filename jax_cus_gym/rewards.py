@@ -13,7 +13,7 @@ The reward can be:
 - Shared (max): All agents share the max reward
 """
 
-from typing import Tuple
+from typing import Tuple, Optional
 import jax
 import jax.numpy as jnp
 from flax import struct
@@ -245,6 +245,7 @@ def compute_rewards(
     boundary_width: float = 2.4,
     boundary_height: float = 2.4,
     d_sen: float = 3.0,
+    precomputed_is_colliding: Optional[jax.Array] = None,
 ) -> Tuple[jax.Array, dict]:
     """Compute rewards for all agents.
     
@@ -274,11 +275,14 @@ def compute_rewards(
     # 1. Check if agents are in target region
     in_target = compute_in_target(positions, grid_centers, l_cell)
     
-    # 2. Check for collisions
-    is_colliding, collision_matrix = compute_agent_collisions(
-        positions, reward_params.collision_threshold,
-        is_periodic, boundary_width, boundary_height
-    )
+    # 2. Check for collisions (use pre-computed result if available)
+    if precomputed_is_colliding is not None:
+        is_colliding = precomputed_is_colliding
+    else:
+        is_colliding, _ = compute_agent_collisions(
+            positions, reward_params.collision_threshold,
+            is_periodic, boundary_width, boundary_height
+        )
     
     # 3. Compute exploration/uniformity component (matches C++ MARL logic)
     exploration = compute_exploration_reward(

@@ -41,7 +41,7 @@ class TestAssemblyTrainConfig:
         
         # Observation defaults
         assert config.k_neighbors == 6
-        assert config.d_sen == 3.0
+        assert config.d_sen == 0.5
         assert config.include_self_state == True
         
         # Physics

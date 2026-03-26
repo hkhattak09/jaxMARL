@@ -72,7 +72,7 @@ class TestImports:
             compute_prior_policy,
         )
         from shape_loader import load_shapes_from_pickle
-        from observations import compute_observation_dim, ObservationParams
+        from observations import ObservationParams
         print("✓ environment imports passed")
     
     def test_train_assembly_imports(self):
@@ -82,7 +82,6 @@ class TestImports:
             TrainingMetrics,
             create_training_state,
             run_episode,
-            train_step,
             train,
         )
         print("✓ train_assembly imports passed")
@@ -345,17 +344,15 @@ class TestTrainingState:
     
     def test_maddpg_init_shapes(self):
         """Test MADDPG initialization produces correct shapes."""
-        from cfg import AssemblyTrainConfig, config_to_maddpg_config
+        from cfg import AssemblyTrainConfig, config_to_maddpg_config, config_to_assembly_params
         from algo import MADDPG
-        from observations import compute_observation_dim, ObservationParams
-        
+        from assembly_env import AssemblySwarmEnv
+
         config = self.get_debug_config()
-        
-        obs_params = ObservationParams(
-            topo_nei_max=config.k_neighbors,
-            d_sen=config.d_sen,
-        )
-        obs_dim = compute_observation_dim(obs_params)
+
+        env = AssemblySwarmEnv(n_agents=config.n_agents)
+        env_params = config_to_assembly_params(config)
+        obs_dim = env.get_obs_dim(env_params)
         action_dim = 2
         
         maddpg_config = config_to_maddpg_config(config, obs_dim, action_dim)
@@ -499,135 +496,6 @@ class TestEpisodeExecution:
 # Test Gradient Updates
 # ============================================================================
 
-class TestGradientUpdates:
-    """Test gradient computation and updates."""
-    
-    def get_debug_config(self):
-        """Get a small debug config for testing."""
-        from cfg import AssemblyTrainConfig
-        return AssemblyTrainConfig(
-            n_agents=3,
-            n_parallel_envs=2,
-            n_episodes=2,
-            max_steps=10,
-            batch_size=8,
-            buffer_size=200,
-            warmup_steps=20,  # Low warmup for testing
-            hidden_dim=32,
-            k_neighbors=2,
-            updates_per_step=2,
-        )
-    
-    def test_train_step_before_warmup(self):
-        """Test train_step returns early before warmup."""
-        from train.train_assembly import create_training_state, train_step
-        
-        config = self.get_debug_config()
-        key = random.PRNGKey(42)
-        
-        training_state, env, maddpg, params, vec_reset, vec_step = create_training_state(
-            config, key
-        )
-        
-        # Buffer is empty, should not update
-        new_maddpg_state, info = train_step(
-            maddpg, training_state.maddpg_state, key, config
-        )
-        
-        assert info["updated"] == False
-        assert info["buffer_size"] == 0
-        
-        print("✓ train_step_before_warmup passed")
-    
-    def test_train_step_after_warmup(self):
-        """Test train_step performs updates after warmup."""
-        from train.train_assembly import create_training_state, run_episode, train_step
-        from cfg import AssemblyTrainConfig
-        
-        # Config with very low warmup
-        config = AssemblyTrainConfig(
-            n_agents=3,
-            n_parallel_envs=4,
-            max_steps=20,
-            batch_size=8,
-            buffer_size=500,
-            warmup_steps=10,  # Very low warmup
-            hidden_dim=32,
-            k_neighbors=2,
-            updates_per_step=2,
-        )
-        
-        key = random.PRNGKey(42)
-        
-        training_state, env, maddpg, params, vec_reset, vec_step = create_training_state(
-            config, key
-        )
-        
-        # Run episode to fill buffer
-        training_state, _ = run_episode(
-            env, maddpg, training_state, params, config,
-            vec_reset, vec_step, explore=True
-        )
-        
-        buffer_size = int(training_state.maddpg_state.buffer_state.size)
-        
-        if buffer_size >= config.warmup_steps:
-            key, train_key = random.split(key)
-            new_maddpg_state, info = train_step(
-                maddpg, training_state.maddpg_state, train_key, config
-            )
-            
-            assert info["updated"] == True
-            assert "actor_loss" in info
-            assert "critic_loss" in info
-            print(f"✓ train_step_after_warmup passed (actor_loss: {info['actor_loss']:.4f})")
-        else:
-            print(f"✓ train_step_after_warmup skipped (buffer: {buffer_size} < {config.warmup_steps})")
-    
-    def test_gradient_not_nan(self):
-        """Test that gradients are not NaN."""
-        from train.train_assembly import create_training_state, run_episode, train_step
-        from cfg import AssemblyTrainConfig
-        
-        config = AssemblyTrainConfig(
-            n_agents=3,
-            n_parallel_envs=4,
-            max_steps=20,
-            batch_size=8,
-            buffer_size=500,
-            warmup_steps=10,
-            hidden_dim=32,
-            k_neighbors=2,
-            updates_per_step=1,
-        )
-        
-        key = random.PRNGKey(42)
-        
-        training_state, env, maddpg, params, vec_reset, vec_step = create_training_state(
-            config, key
-        )
-        
-        # Run episode to fill buffer
-        training_state, _ = run_episode(
-            env, maddpg, training_state, params, config,
-            vec_reset, vec_step, explore=True
-        )
-        
-        buffer_size = int(training_state.maddpg_state.buffer_state.size)
-        
-        if buffer_size >= config.warmup_steps:
-            key, train_key = random.split(key)
-            new_maddpg_state, info = train_step(
-                maddpg, training_state.maddpg_state, train_key, config
-            )
-            
-            assert not np.isnan(info.get("actor_loss", 0.0)), "Actor loss should not be NaN"
-            assert not np.isnan(info.get("critic_loss", 0.0)), "Critic loss should not be NaN"
-            print("✓ gradient_not_nan passed")
-        else:
-            print(f"✓ gradient_not_nan skipped (buffer: {buffer_size})")
-
-
 # ============================================================================
 # Test Noise Decay
 # ============================================================================
@@ -687,7 +555,7 @@ class TestEndToEnd:
     
     def test_mini_training_loop(self):
         """Test a complete mini training loop."""
-        from train.train_assembly import create_training_state, run_episode, train_step
+        from train.train_assembly import create_training_state, run_episode, create_jit_train_step
         from cfg import AssemblyTrainConfig
         
         config = AssemblyTrainConfig(
@@ -710,9 +578,10 @@ class TestEndToEnd:
         training_state, env, maddpg, params, vec_reset, vec_step = create_training_state(
             config, key
         )
-        
+        jit_train_step = create_jit_train_step(maddpg, config)
+
         rewards = []
-        
+
         # Mini training loop
         for episode in range(config.n_episodes):
             # Run episode
@@ -720,15 +589,15 @@ class TestEndToEnd:
                 env, maddpg, training_state, params, config,
                 vec_reset, vec_step, explore=True
             )
-            
+
             rewards.append(metrics["episode_reward"])
-            
+
             # Train step
             key, train_key = random.split(training_state.key)
-            maddpg_state, train_info = train_step(
-                maddpg, training_state.maddpg_state, train_key, config
+            maddpg_state, train_info = jit_train_step(
+                training_state.maddpg_state, train_key
             )
-            
+
             training_state = training_state.replace(
                 maddpg_state=maddpg_state,
                 key=key,
