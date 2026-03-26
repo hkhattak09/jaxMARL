@@ -612,7 +612,7 @@ class AssemblySwarmEnv(MultiAgentEnv):
         occupied_mask = occupied_by_any & state.grid_mask
 
         if precomputed_is_colliding is None:
-            precomputed_is_colliding = compute_agent_collisions(
+            precomputed_is_colliding, _ = compute_agent_collisions(
                 state.positions, params.reward_params.collision_threshold
             )
 
