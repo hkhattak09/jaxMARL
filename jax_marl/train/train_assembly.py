@@ -62,6 +62,7 @@ from cfg import (
 
 # Algorithm imports
 from algo import MADDPG, MADDPGConfig, MADDPGState
+from memory_utils import memory_report
 
 # Environment imports
 from assembly_env import (
@@ -788,10 +789,15 @@ def train(
     log_file = Path(log_dir) / "training_log.json"
     training_history = []
     
+    # Memory report before training starts (arrays allocated, no XLA executables yet)
+    if verbose:
+        memory_report(training_state.maddpg_state, training_state, config,
+                      label="After init (pre-compile)")
+
     # Training loop
     print("\nTraining started...")
     training_start = time.time()
-    
+
     for episode in range(start_episode, config.n_episodes):
         # Run episode across all parallel environments (using JIT-compiled rollout)
         episode_start = time.time()
@@ -811,7 +817,13 @@ def train(
             key=key,
         )
         train_time = time.time() - train_start
-        
+
+        # After first episode: XLA executables are now compiled and live on device.
+        # This gives the true peak memory including compiled kernels.
+        if episode == start_episode and verbose:
+            memory_report(training_state.maddpg_state, training_state, config,
+                          label="After episode 0 (post-compile, true peak)")
+
         # Convert JAX arrays to Python scalars for logging
         buffer_size_val = int(train_info['buffer_size'])
         actor_loss_val = float(train_info['actor_loss']) if train_info['updated'] else 0.0
