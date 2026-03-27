@@ -43,6 +43,9 @@ import jax.numpy as jnp
 from jax import random
 from flax import struct
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 # Add paths for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -565,11 +568,12 @@ def run_eval_episode(
     params: AssemblyParams,
     config: AssemblyTrainConfig,
     key: jax.Array,
-) -> Tuple[Dict[str, Any], List[AssemblyState]]:
+) -> Tuple[Dict[str, Any], List, Optional[List[Dict]]]:
     """Run a single evaluation episode (no exploration noise, no buffer updates).
-    
-    Collects states for the entire episode for visualization.
-    
+
+    Collects states for visualization.  When use_ctm_critic=True, also runs a
+    vmapped CTM critic forward pass at every step to collect tick-level data.
+
     Args:
         env: Environment instance
         maddpg: MADDPG instance
@@ -577,50 +581,93 @@ def run_eval_episode(
         params: Environment parameters
         config: Training configuration
         key: JAX random key
-        
+
     Returns:
-        metrics: Episode metrics
-        states: List of environment states for visualization
+        metrics:       Episode metrics dict
+        states:        List of AssemblyState objects for visualization
+        ctm_eval_data: List of per-step dicts when use_ctm_critic=True, else None.
+            Each dict contains:
+                'q_ticks'       (n_agents, T)  — Q at every tick
+                'cert_ticks'    (n_agents, T)  — certainty at every tick
+                'tick_best'     (n_agents,)    — argmax-Q tick per agent
+                'tick_certain'  (n_agents,)    — argmax-certainty tick per agent
+                'cert_per_agent'(n_agents,)    — certainty at tick_certain (for GIF colours)
     """
-    # Reset single environment for eval (not parallel - we want one clean trajectory)
     key, reset_key = random.split(key)
     obs, env_state = env.reset(reset_key, params)
-    
-    # Collect states for visualization
+
     states = [env_state]
-    
-    # Episode accumulators
+
     episode_reward = 0.0
     step_rewards = []
     coverages = []
     collisions = []
     dist_uniformities = []
     voronoi_uniformities = []
-    
+
+    ctm_eval_data: Optional[List[Dict]] = [] if config.use_ctm_critic else None
+
+    # Build a JIT-compiled CTM eval function once before the loop.
+    # Defining it inside the loop would create a new Python function object each
+    # iteration, causing JAX to re-trace on every step.
+    if config.use_ctm_critic:
+        _ctm_critic        = maddpg.ctm_critic
+        _ctm_params_all    = maddpg_state.agent_states.critic_params
+
+        @jax.jit
+        def _ctm_eval_step(traj_b, obs_b, act_b):
+            """Vmap CTM forward pass over all agent critic params. Compiled once."""
+            def _one_agent(cp):
+                q, c = _ctm_critic.apply(cp, traj_b, obs_b, act_b, alpha=0.0)
+                return q[0, 0, :], c[0, 1, :]  # (T,), (T,)
+            return jax.vmap(_one_agent)(_ctm_params_all)
+
     for step in range(config.max_steps):
         key, action_key, step_key = random.split(key, 3)
-        
-        # Select actions WITHOUT exploration noise
+
         obs_list = [obs[i] for i in range(config.n_agents)]
         actions, _, _ = maddpg.select_actions(
-            action_key, maddpg_state, obs_list, explore=False  # No noise!
+            action_key, maddpg_state, obs_list, explore=False
         )
-        
-        # Stack actions for environment
+
+        # CTM tick-level forward pass — runs compiled kernel, zero Python re-tracing.
+        if config.use_ctm_critic:
+            traj_len = config.ctm_traj_len
+            traj_raw = np.array(env_state.trajectory)   # (traj_len, n_agents, 2)
+            traj_idx = int(env_state.traj_idx)
+            # Replicate _reorder_trajectory: traj_idx is last-written (newest),
+            # so traj_idx+1 is oldest.
+            indices      = (np.arange(traj_len) + traj_idx + 1) % traj_len
+            traj_ordered = traj_raw[indices]             # chronological
+
+            traj_batch    = jnp.array(traj_ordered)[None]  # (1, traj_len, n_agents, 2)
+            obs_batch     = jnp.stack(obs_list)[None]       # (1, n_agents, obs_dim)
+            actions_batch = jnp.stack(actions)[None]        # (1, n_agents, action_dim)
+
+            q_all, cert_all = _ctm_eval_step(traj_batch, obs_batch, actions_batch)
+            q_all    = np.array(q_all)    # (n_agents, T)
+            cert_all = np.array(cert_all) # (n_agents, T)
+
+            tick_best      = np.argmax(q_all,    axis=-1)   # (n_agents,)
+            tick_certain   = np.argmax(cert_all, axis=-1)   # (n_agents,)
+            cert_per_agent = cert_all[np.arange(config.n_agents), tick_certain]
+
+            ctm_eval_data.append({
+                'q_ticks':        q_all,
+                'cert_ticks':     cert_all,
+                'tick_best':      tick_best,
+                'tick_certain':   tick_certain,
+                'cert_per_agent': cert_per_agent,
+            })
+
         actions_array = jnp.stack(actions)
-        
-        # Step environment
         next_obs, env_state, rewards, dones, info = env.step(
             step_key, env_state, actions_array, params
         )
-        
-        # Save state for visualization
+
         states.append(env_state)
-        
-        # Update observations
         obs = next_obs
-        
-        # Accumulate metrics
+
         step_reward = float(jnp.mean(rewards))
         episode_reward += step_reward
         step_rewards.append(step_reward)
@@ -628,22 +675,22 @@ def run_eval_episode(
         collisions.append(float(jnp.mean(env_state.is_colliding)))
         dist_uniformities.append(float(info["distribution_uniformity"]))
         voronoi_uniformities.append(float(info["voronoi_uniformity"]))
-        
+
         if dones[0]:
             break
-    
+
     num_steps = step + 1
     metrics = {
-        "eval_reward": episode_reward,
-        "eval_reward_mean": episode_reward / num_steps if num_steps > 0 else 0.0,
-        "eval_coverage": coverages[-1] if coverages else 0.0,  # Final state only
-        "eval_distribution_uniformity": dist_uniformities[-1] if dist_uniformities else 0.0,  # Final state only
-        "eval_voronoi_uniformity": voronoi_uniformities[-1] if voronoi_uniformities else 0.0,  # Final state only
-        "eval_collision": np.mean(collisions),
-        "eval_steps": num_steps,
+        "eval_reward":                episode_reward,
+        "eval_reward_mean":           episode_reward / num_steps if num_steps > 0 else 0.0,
+        "eval_coverage":              coverages[-1] if coverages else 0.0,
+        "eval_distribution_uniformity": dist_uniformities[-1] if dist_uniformities else 0.0,
+        "eval_voronoi_uniformity":    voronoi_uniformities[-1] if voronoi_uniformities else 0.0,
+        "eval_collision":             np.mean(collisions),
+        "eval_steps":                 num_steps,
     }
-    
-    return metrics, states
+
+    return metrics, states, ctm_eval_data
 
 
 def create_jit_train_step(
@@ -933,10 +980,10 @@ def train(
             key, eval_key = random.split(training_state.key)
             training_state = training_state.replace(key=key)
             
-            eval_metrics, eval_states = run_eval_episode(
+            eval_metrics, eval_states, ctm_eval_data = run_eval_episode(
                 env, maddpg, training_state.maddpg_state, params, config, eval_key
             )
-            
+
             if verbose:
                 print(
                     f"  [EVAL] Episode {episode} | "
@@ -945,7 +992,7 @@ def train(
                     f"DistUnif: {eval_metrics['eval_distribution_uniformity']:.3f} | "
                     f"VoronoiUnif: {eval_metrics['eval_voronoi_uniformity']:.3f}"
                 )
-            
+
             # Log eval metrics
             log_entry = {
                 "episode": episode,
@@ -953,19 +1000,32 @@ def train(
                 **eval_metrics,
             }
             training_history.append(log_entry)
-            
-            # Save eval video if enabled
+
+            # Save eval video and CTM plots if enabled
             if config.eval_save_video and eval_dir is not None:
                 try:
                     from visualize.renderer import create_animation
-                    # Create eval directory lazily (only when saving first video)
+
                     eval_dir.mkdir(parents=True, exist_ok=True)
                     video_path = eval_dir / f"eval_ep{episode}.gif"
+
+                    # Build per-frame agent colours from CTM certainty when enabled.
+                    # Frame 0 = initial state (pre-action) — use neutral grey.
+                    # Frames 1..N map to ctm_eval_data[0..N-1].
+                    per_frame_colors = None
+                    if config.use_ctm_critic and ctm_eval_data:
+                        cmap = plt.cm.RdYlGn
+                        per_frame_colors = [None]  # frame 0: default renderer colours
+                        for step_data in ctm_eval_data:
+                            rgba = [cmap(float(c)) for c in step_data['cert_per_agent']]
+                            per_frame_colors.append(rgba)
+
                     create_animation(
                         eval_states, params,
                         save_path=str(video_path),
                         fps=config.eval_video_fps,
                         show=False,
+                        per_frame_colors=per_frame_colors,
                     )
                     if verbose:
                         print(f"  [EVAL] Saved video: {video_path}")
@@ -973,6 +1033,29 @@ def train(
                     print(f"  [EVAL] Could not save video (matplotlib not available): {e}")
                 except Exception as e:
                     print(f"  [EVAL] Error saving video: {e}")
+
+            # Save CTM tick plots when use_ctm_critic=True
+            if config.use_ctm_critic and ctm_eval_data and eval_dir is not None:
+                try:
+                    from ctm_plots import plot_ctm_tick_progression, plot_tick_scatter
+                    eval_dir.mkdir(parents=True, exist_ok=True)
+                    n_ticks = config.ctm_iterations
+
+                    tick_prog_path = eval_dir / f"ctm_ticks_ep{episode}.png"
+                    plot_ctm_tick_progression(
+                        ctm_eval_data, tick_prog_path, episode, n_ticks
+                    )
+
+                    scatter_path = eval_dir / f"ctm_scatter_ep{episode}.png"
+                    plot_tick_scatter(
+                        ctm_eval_data, scatter_path, episode, n_ticks
+                    )
+
+                    if verbose:
+                        print(f"  [EVAL] Saved CTM plots: {tick_prog_path.name}, "
+                              f"{scatter_path.name}")
+                except Exception as e:
+                    print(f"  [EVAL] Error saving CTM plots: {e}")
     
     # Final save
     total_time = time.time() - training_start

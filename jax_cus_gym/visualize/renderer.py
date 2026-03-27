@@ -258,10 +258,11 @@ def create_animation(
     fps: int = 10,
     figsize: Tuple[int, int] = (8, 8),
     show: bool = False,
+    per_frame_colors: Optional[List] = None,
     **render_kwargs,
 ) -> animation.FuncAnimation:
     """Create an animation from a sequence of states.
-    
+
     Args:
         states: List of AssemblyState objects
         params: AssemblyParams object
@@ -269,19 +270,25 @@ def create_animation(
         fps: Frames per second
         figsize: Figure size
         show: Whether to display the animation
+        per_frame_colors: Optional list of per-frame agent color arrays, one entry per
+            frame in states.  Each entry is passed as agent_colors to render_frame,
+            overriding the default status-based coloring.  Pass None to use defaults.
         **render_kwargs: Additional arguments passed to render_frame
-        
+
     Returns:
         matplotlib animation object
     """
     fig, ax = plt.subplots(1, 1, figsize=figsize)
-    
+
     def init():
         ax.clear()
         return []
-    
+
     def update(frame_idx):
-        render_frame(states[frame_idx], params, ax=ax, **render_kwargs)
+        kwargs = dict(render_kwargs)
+        if per_frame_colors is not None and frame_idx < len(per_frame_colors):
+            kwargs['agent_colors'] = per_frame_colors[frame_idx]
+        render_frame(states[frame_idx], params, ax=ax, **kwargs)
         return []
     
     interval = 1000 // fps  # Convert fps to ms interval

@@ -691,7 +691,7 @@ class TestEvaluation:
         maddpg_state = maddpg.init(init_key)
         
         # Run eval episode
-        eval_metrics, eval_states = run_eval_episode(
+        eval_metrics, eval_states, _ = run_eval_episode(
             env, maddpg, maddpg_state, params, config, eval_key
         )
         
@@ -740,7 +740,7 @@ class TestEvaluation:
         buffer_size_before = int(maddpg_state.buffer_state.size)
         
         # Run eval episode (should NOT modify buffer)
-        eval_metrics, eval_states = run_eval_episode(
+        eval_metrics, eval_states, _ = run_eval_episode(
             env, maddpg, maddpg_state, params, config, eval_key
         )
         
@@ -779,7 +779,7 @@ class TestEvaluation:
         key, init_key, eval_key = random.split(key, 3)
         maddpg_state = maddpg.init(init_key)
         
-        eval_metrics, eval_states = run_eval_episode(
+        eval_metrics, eval_states, _ = run_eval_episode(
             env, maddpg, maddpg_state, params, config, eval_key
         )
         
@@ -829,7 +829,7 @@ class TestEvaluation:
         key, init_key, eval_key = random.split(key, 3)
         maddpg_state = maddpg.init(init_key)
         
-        eval_metrics, eval_states = run_eval_episode(
+        eval_metrics, eval_states, _ = run_eval_episode(
             env, maddpg, maddpg_state, params, config, eval_key
         )
         
