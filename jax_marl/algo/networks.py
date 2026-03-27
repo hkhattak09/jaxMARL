@@ -15,12 +15,21 @@ with optional modern improvements (layer norm, dropout).
 """
 
 from typing import Sequence, Callable, Any, Tuple, Optional, List, Dict
+import math
+import sys
+from pathlib import Path
 import jax
 import jax.numpy as jnp
+from jax import random as jrandom
 from jax import random
 import flax.linen as nn
 from flax import struct
 from functools import partial
+
+# Add jaxCTM to path for SuperLinear import
+_jaxctm_path = str(Path(__file__).parent.parent.parent / "jaxCTM")
+if _jaxctm_path not in sys.path:
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
 # Default activation function
@@ -779,10 +788,10 @@ def print_network_summary(
 
 def get_activation_fn(name: str) -> Callable:
     """Get activation function by name.
-    
+
     Args:
         name: Activation name ('relu', 'leaky_relu', 'tanh', 'elu', 'gelu')
-        
+
     Returns:
         Activation function
     """
@@ -796,3 +805,418 @@ def get_activation_fn(name: str) -> Callable:
         'swish': nn.swish,
     }
     return activations.get(name, nn.leaky_relu)
+
+
+# ============================================================================
+# CTM Temporal Critic
+# ============================================================================
+
+class TrajectoryEncoder(nn.Module):
+    """Encode trajectory + current obs/actions into kv tokens for CTMCritic.
+
+    Produces hybrid tokens (D4):
+      - traj_len temporal tokens  — one per step, joint over all agents (pos + approx-vel)
+      - n_agents per-agent tokens — one per agent, current (obs, action) pair
+
+    Total kv sequence length: traj_len + n_agents
+
+    Inputs:
+        trajectory:  (B, traj_len, n_agents, 2)  float16 or float32 position history
+        all_obs:     (B, n_agents, obs_dim)       current observations
+        all_actions: (B, n_agents, action_dim)    actions being evaluated
+
+    Outputs:
+        kv:              (B, traj_len + n_agents, d_input)  LayerNorm'd kv tokens
+        per_agent_feat:  (B, n_agents, d_model)             per-agent features for Option-3 upgrade
+    """
+    d_input: int    # attention embedding dimension (128)
+    d_model: int    # CTM neuron count; used for per_agent_feat (Option 3 ready)
+    n_agents: int
+    traj_len: int
+    vel_max: float = 0.8
+
+    @nn.compact
+    def __call__(
+        self,
+        trajectory: jax.Array,
+        all_obs: jax.Array,
+        all_actions: jax.Array,
+    ) -> Tuple[jax.Array, jax.Array]:
+        B = trajectory.shape[0]
+
+        # Cast to float32 — trajectory stored as float16 in buffer (D6)
+        pos = trajectory.astype(jnp.float32)  # (B, traj_len, n_agents, 2)
+
+        # --- Temporal branch ---
+        # Finite-difference velocity (D5): vel[0]=0, vel[t]=(p[t]-p[t-1])/vel_max
+        vel = jnp.concatenate([
+            jnp.zeros_like(pos[:, :1]),                               # (B, 1, n_agents, 2)
+            (pos[:, 1:] - pos[:, :-1]) / self.vel_max,               # (B, traj_len-1, n_agents, 2)
+        ], axis=1)  # (B, traj_len, n_agents, 2)
+
+        # Flatten agents into feature dim: (B, traj_len, n_agents*4)
+        joint = jnp.concatenate([pos, vel], axis=-1)                 # (B, traj_len, n_agents, 4)
+        joint = joint.reshape(B, self.traj_len, self.n_agents * 4)
+
+        traj_kv = nn.Dense(self.d_input, name='traj_proj')(joint)    # (B, traj_len, d_input)
+
+        # --- Per-agent branch ---
+        per_agent = jnp.concatenate(
+            [all_obs, all_actions.astype(jnp.float32)], axis=-1
+        )  # (B, n_agents, obs_dim + action_dim)
+
+        agent_kv = nn.Dense(self.d_input, name='agent_proj')(per_agent)   # (B, n_agents, d_input)
+
+        # Per-agent features for Option-3 credit-assignment upgrade (not wired here)
+        per_agent_feat = nn.Dense(self.d_model, name='agent_feat')(per_agent)  # (B, n_agents, d_model)
+
+        # Combine and normalise (D4)
+        kv = jnp.concatenate([traj_kv, agent_kv], axis=1)            # (B, traj_len+n_agents, d_input)
+        kv = nn.LayerNorm(name='kv_ln')(kv)
+
+        return kv, per_agent_feat
+
+
+class CTMCritic(nn.Module):
+    """CTM-based temporal critic for MADDPG (Option 2, D1–D10).
+
+    Replaces the MLP critic with a Continuous Thought Machine that
+    cross-attends over a hybrid trajectory-token sequence at each internal tick.
+
+    Architecture mirrors ContinuousThoughtMachine (jaxCTM/model.py) but:
+      - TrajectoryEncoder replaces the CNN backbone (no BatchNorm, no CNN weights)
+      - Scalar Q head  +  hybrid certainty head  replace the classification projector
+      - out_dims is always 1 (scalar Q)
+
+    Inputs:
+        trajectory:  (B, traj_len, n_agents, 2)  position history
+        all_obs:     (B, n_agents, obs_dim)       current observations
+        all_actions: (B, n_agents, action_dim)    actions being evaluated
+        alpha:       float in [0, 1]              certainty blend (1=tick-var, 0=learned)
+        deterministic: bool                       True disables dropout
+
+    Outputs:
+        q_values:    (B, 1, iterations)  Q-value at each internal tick
+        certainties: (B, 2, iterations)  [uncertainty, certainty] at each tick
+            certainties[:, 1, :] is the certainty score used for tick selection
+    """
+    # Architecture (D10)
+    iterations: int        # 8
+    d_model: int           # 64
+    d_input: int           # 128
+    memory_length: int     # 5
+    heads: int             # 2
+    n_synch_out: int       # 8
+    n_synch_action: int    # 8
+    memory_hidden_dims: int  # 8
+
+    # Trajectory config
+    n_agents: int
+    traj_len: int
+
+    vel_max: float = 0.8
+    dropout_rate: float = 0.0
+
+    def setup(self):
+        from jaxCTM.layers import SuperLinear
+
+        d = self.d_input
+
+        # --- Trajectory encoder (replaces CNN backbone, D1) ---
+        self.traj_encoder = TrajectoryEncoder(
+            d_input=d,
+            d_model=self.d_model,
+            n_agents=self.n_agents,
+            traj_len=self.traj_len,
+            vel_max=self.vel_max,
+        )
+
+        # --- Attention query projection (from synch_action) ---
+        self.q_proj_linear = nn.Dense(features=d)
+
+        # --- Multi-head attention internal projections ---
+        assert d % self.heads == 0, "d_input must be divisible by heads"
+        self.head_dim = d // self.heads
+        self.attn_q_proj   = nn.Dense(features=d)
+        self.attn_k_proj   = nn.Dense(features=d)
+        self.attn_v_proj   = nn.Dense(features=d)
+        self.attn_out_proj = nn.Dense(features=d)
+
+        # --- Synapse layer (state update at each tick) ---
+        self.synapse_drop   = nn.Dropout(rate=self.dropout_rate)
+        self.synapse_linear = nn.Dense(features=self.d_model * 2)
+        self.synapse_ln     = nn.LayerNorm()
+
+        # --- Trace processor (neuron-level models over activation history) ---
+        self.trace_sl1 = SuperLinear(
+            out_dims=2 * self.memory_hidden_dims,
+            N=self.d_model,
+            dropout_rate=self.dropout_rate,
+        )
+        self.trace_sl2 = SuperLinear(
+            out_dims=2,
+            N=self.d_model,
+            dropout_rate=self.dropout_rate,
+        )
+
+        # --- Q output head ---
+        self.q_projector = nn.Dense(features=1)
+
+        # --- Learned certainty head (D2) ---
+        # Bias initialised to +2.0 → sigmoid(2.0) ≈ 0.88 (starts fairly confident)
+        self.cert_projector = nn.Dense(
+            features=1,
+            bias_init=nn.initializers.constant(2.0),
+        )
+
+        # --- Synchronization sizes ---
+        self.synch_repr_size_action = (self.n_synch_action * (self.n_synch_action + 1)) // 2
+        self.synch_repr_size_out    = (self.n_synch_out    * (self.n_synch_out    + 1)) // 2
+
+        # Upper-triangular indices (static, computed once at setup)
+        self.triu_idx_action = jnp.triu_indices(self.n_synch_action)
+        self.triu_idx_out    = jnp.triu_indices(self.n_synch_out)
+
+        # --- Learned initial recurrent state ---
+        scale_state = 1.0 / math.sqrt(self.d_model)
+        scale_trace = 1.0 / math.sqrt(self.d_model + self.memory_length)
+
+        self.start_activated_state = self.param(
+            'start_activated_state',
+            lambda rng, shape: jrandom.uniform(rng, shape, minval=-scale_state, maxval=scale_state),
+            (self.d_model,),
+        )
+        self.start_trace = self.param(
+            'start_trace',
+            lambda rng, shape: jrandom.uniform(rng, shape, minval=-scale_trace, maxval=scale_trace),
+            (self.d_model, self.memory_length),
+        )
+
+        # --- Learned decay parameters (D8) ---
+        # Clamped to [0, 15]; r = exp(-decay) ∈ [exp(-15), 1]
+        self.decay_params_action = self.param(
+            'decay_params_action',
+            nn.initializers.zeros_init(),
+            (self.synch_repr_size_action,),
+        )
+        self.decay_params_out = self.param(
+            'decay_params_out',
+            nn.initializers.zeros_init(),
+            (self.synch_repr_size_out,),
+        )
+
+    # ------------------------------------------------------------------
+    # Internal helpers (mirrors ContinuousThoughtMachine)
+    # ------------------------------------------------------------------
+
+    def _compute_synchronisation(self, activated_state, decay_alpha, decay_beta, r, synch_type):
+        """Pairwise outer-product EMA synchronization."""
+        if synch_type == 'action':
+            n   = self.n_synch_action
+            selected = activated_state[:, -n:]
+            idx = self.triu_idx_action
+        else:
+            n   = self.n_synch_out
+            selected = activated_state[:, :n]
+            idx = self.triu_idx_out
+
+        outer    = selected[:, :, None] * selected[:, None, :]  # (B, n, n)
+        pairwise = outer[:, idx[0], idx[1]]                     # (B, synch_size)
+
+        if decay_alpha is None:
+            decay_alpha = pairwise
+            decay_beta  = jnp.ones_like(pairwise)
+        else:
+            decay_alpha = r * decay_alpha + pairwise
+            decay_beta  = r * decay_beta  + 1.0
+
+        return decay_alpha / jnp.sqrt(decay_beta), decay_alpha, decay_beta
+
+    def _multi_head_attention(self, q, kv):
+        """Scaled dot-product multi-head cross-attention."""
+        B, S, _ = kv.shape
+        H = self.heads
+        D = self.head_dim
+
+        q_proj = self.attn_q_proj(q)   # (B, 1, d_input)
+        k_proj = self.attn_k_proj(kv)  # (B, S, d_input)
+        v_proj = self.attn_v_proj(kv)  # (B, S, d_input)
+
+        q_heads = q_proj.reshape(B, 1, H, D).transpose(0, 2, 1, 3)  # (B, H, 1, D)
+        k_heads = k_proj.reshape(B, S, H, D).transpose(0, 2, 1, 3)  # (B, H, S, D)
+        v_heads = v_proj.reshape(B, S, H, D).transpose(0, 2, 1, 3)  # (B, H, S, D)
+
+        scale       = jnp.sqrt(jnp.array(D, dtype=q_proj.dtype))
+        attn_logits = jnp.einsum('bhqd,bhkd->bhqk', q_heads, k_heads) / scale
+        attn_weights = jax.nn.softmax(attn_logits, axis=-1)
+
+        attn_out = jnp.einsum('bhqk,bhkd->bhqd', attn_weights, v_heads)
+        attn_out = attn_out.transpose(0, 2, 1, 3).reshape(B, 1, self.d_input)
+        return self.attn_out_proj(attn_out)
+
+    # ------------------------------------------------------------------
+    # Forward pass
+    # ------------------------------------------------------------------
+
+    def __call__(
+        self,
+        trajectory: jax.Array,
+        all_obs: jax.Array,
+        all_actions: jax.Array,
+        alpha: float = 0.0,
+        deterministic: bool = True,
+    ) -> Tuple[jax.Array, jax.Array]:
+        """Forward pass through the CTM temporal critic.
+
+        Args:
+            trajectory:   (B, traj_len, n_agents, 2)  chronological position history
+            all_obs:      (B, n_agents, obs_dim)       current observations
+            all_actions:  (B, n_agents, action_dim)    actions being evaluated
+            alpha:        certainty blend in [0, 1] — 1 = tick-variance only, 0 = learned only
+            deterministic: True disables dropout
+
+        Returns:
+            q_values:    (B, 1, iterations)  Q-value at each tick
+            certainties: (B, 2, iterations)  [:, 0, :] = uncertainty,  [:, 1, :] = certainty
+        """
+        B = trajectory.shape[0]
+
+        # D8: clamp decay params at forward entry
+        decay_params_action = jnp.clip(self.decay_params_action, 0.0, 15.0)
+        decay_params_out    = jnp.clip(self.decay_params_out,    0.0, 15.0)
+
+        # --- Encode trajectory into kv tokens (replaces CNN, D1 / D4) ---
+        kv, _ = self.traj_encoder(trajectory, all_obs, all_actions)
+
+        # --- Initialise recurrent state ---
+        state_trace = jnp.broadcast_to(
+            self.start_trace[None, :, :], (B, self.d_model, self.memory_length)
+        )
+        activated_state = jnp.broadcast_to(
+            self.start_activated_state[None, :], (B, self.d_model)
+        )
+
+        r_action = jnp.exp(-decay_params_action)[None, :]  # (1, synch_size_action)
+        r_out    = jnp.exp(-decay_params_out)[None, :]     # (1, synch_size_out)
+
+        # Seed output EMA with initial state
+        _, decay_alpha_out, decay_beta_out = self._compute_synchronisation(
+            activated_state, None, None, r_out, 'out'
+        )
+        decay_alpha_action = None
+        decay_beta_action  = None
+
+        all_q_t      = []  # list of (B, 1) Q-values per tick
+        all_synch_t  = []  # list of (B, synch_size_out) for certainty projection
+
+        # --- Recurrent loop (unrolled by XLA) ---
+        for _ in range(self.iterations):
+
+            # 1. Action synch → attention query
+            synch_action, decay_alpha_action, decay_beta_action = self._compute_synchronisation(
+                activated_state, decay_alpha_action, decay_beta_action, r_action, 'action'
+            )
+
+            # 2. Cross-attention over trajectory tokens
+            q_query  = self.q_proj_linear(synch_action)[:, None, :]  # (B, 1, d_input)
+            attn_out = self._multi_head_attention(q_query, kv).squeeze(1)  # (B, d_input)
+
+            # 3. Synapse — GLU state update
+            pre = jnp.concatenate([attn_out, activated_state], axis=-1)
+            s   = self.synapse_drop(pre, deterministic=deterministic)
+            s   = self.synapse_linear(s)
+            a, b = jnp.split(s, 2, axis=-1)
+            s   = a * jax.nn.sigmoid(b)
+            s   = self.synapse_ln(s)
+
+            # 4. Slide trace window (drop oldest, append current pre-activation)
+            state_trace = jnp.concatenate(
+                [state_trace[:, :, 1:], s[:, :, None]], axis=-1
+            )
+
+            # 5. Trace processor — neuron-level models (GLU × 2)
+            tp = self.trace_sl1(state_trace, deterministic=deterministic)
+            tp_a, tp_b = jnp.split(tp, 2, axis=-1)
+            tp = tp_a * jax.nn.sigmoid(tp_b)
+            tp = self.trace_sl2(tp, deterministic=deterministic)
+            tp_a2, tp_b2 = jnp.split(tp, 2, axis=-1)
+            activated_state = (tp_a2 * jax.nn.sigmoid(tp_b2)).squeeze(-1)
+
+            # 6. Output synch
+            synch_out, decay_alpha_out, decay_beta_out = self._compute_synchronisation(
+                activated_state, decay_alpha_out, decay_beta_out, r_out, 'out'
+            )
+
+            # 7. Q-value head
+            q_t = self.q_projector(synch_out)  # (B, 1)
+            all_q_t.append(q_t)
+            all_synch_t.append(synch_out)      # (B, synch_size_out)
+
+        # Stack across ticks
+        q_values = jnp.stack(all_q_t, axis=-1)    # (B, 1, T)
+        q_flat   = q_values[:, 0, :]               # (B, T)
+
+        # --- Hybrid certainty (D2) ---
+        cert_list = []
+        for t in range(self.iterations):
+            # Learned component: sigmoid of projector applied to synch_out
+            cert_raw = jax.nn.sigmoid(
+                self.cert_projector(all_synch_t[t])
+            ).squeeze(-1)  # (B,)
+
+            # Structural component: tick-variance (parameter-free, calibrated from step 0)
+            if t == 0:
+                tick_var = jnp.zeros_like(cert_raw)
+            else:
+                q_so_far = q_flat[:, :t + 1]           # (B, t+1)
+                var      = jnp.var(q_so_far, axis=-1)  # (B,)
+                tick_var = var / (1.0 + var)            # ∈ [0, 1)
+
+            # Blend: alpha=1 → tick-variance; alpha=0 → learned (D2)
+            cert_t = cert_raw * (1.0 - alpha) + (1.0 - tick_var) * alpha  # (B,)
+
+            cert_list.append(jnp.stack([1.0 - cert_t, cert_t], axis=-1))  # (B, 2)
+
+        certainties = jnp.stack(cert_list, axis=-1)  # (B, 2, T)
+
+        return q_values, certainties
+
+
+def create_ctm_critic(
+    key: jax.Array,
+    n_agents: int,
+    obs_dim: int,
+    action_dim: int,
+    traj_len: int,
+    iterations: int = 8,
+    d_model: int = 64,
+    d_input: int = 128,
+    memory_length: int = 5,
+    heads: int = 2,
+    n_synch_out: int = 8,
+    n_synch_action: int = 8,
+    memory_hidden_dims: int = 8,
+) -> Tuple['CTMCritic', Any]:
+    """Create and initialise a CTMCritic.
+
+    Returns:
+        critic: CTMCritic module
+        params: Initialised parameters
+    """
+    critic = CTMCritic(
+        iterations=iterations,
+        d_model=d_model,
+        d_input=d_input,
+        memory_length=memory_length,
+        heads=heads,
+        n_synch_out=n_synch_out,
+        n_synch_action=n_synch_action,
+        memory_hidden_dims=memory_hidden_dims,
+        n_agents=n_agents,
+        traj_len=traj_len,
+    )
+    dummy_traj    = jnp.zeros((1, traj_len, n_agents, 2))
+    dummy_obs     = jnp.zeros((1, n_agents, obs_dim))
+    dummy_actions = jnp.zeros((1, n_agents, action_dim))
+    params = critic.init(key, dummy_traj, dummy_obs, dummy_actions)
+    return critic, params

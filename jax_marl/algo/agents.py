@@ -1236,11 +1236,11 @@ def load_agent_params(
     params_dict: Dict[str, Any],
 ) -> DDPGAgentState:
     """Load parameters into agent state.
-    
+
     Args:
         agent_state: Current agent state (for structure)
         params_dict: Dictionary of parameters to load
-        
+
     Returns:
         new_agent_state: State with loaded parameters
     """
@@ -1253,3 +1253,241 @@ def load_agent_params(
         critic_opt_state=params_dict['critic_opt_state'],
         step=params_dict.get('step', jnp.array(0, dtype=jnp.int32)),
     )
+
+
+# ============================================================================
+# CTM Temporal Critic — Loss Functions and Update (D2, D3, D8, D9)
+# ============================================================================
+
+def compute_ctm_critic_loss(
+    ctm_critic,
+    critic_params: Any,
+    target_critic_params: Any,
+    trajectory: jax.Array,         # (B, traj_len, n_agents, 2)
+    all_obs: jax.Array,             # (B, n_agents, obs_dim)
+    all_actions: jax.Array,         # (B, n_agents, action_dim)
+    next_trajectory: jax.Array,     # (B, traj_len, n_agents, 2)
+    next_all_obs: jax.Array,        # (B, n_agents, obs_dim)
+    next_all_actions: jax.Array,    # (B, n_agents, action_dim) — target network actions
+    rewards: jax.Array,             # (B,)
+    dones: jax.Array,               # (B,)
+    gamma: float,
+    alpha: float = 0.0,             # certainty blend (1 = tick-var only, 0 = learned only)
+) -> Tuple[jax.Array, Dict[str, Any]]:
+    """CTM critic TD loss using certainty-discounted Bellman target (D3).
+
+    Loss = ( MSE(Q[tick_best], bellman_target)
+           + MSE(Q[tick_certain], bellman_target) ) / 2   (D2 dual-tick)
+
+    Bellman target = r + γ * Q_target[tick_certain_next] * cert_score * (1 - done)
+
+    Returns:
+        loss: scalar
+        info: monitoring metrics dict (D3 monitoring)
+    """
+    # --- Target network: find most-certain tick of next state ---
+    next_q_vals, next_certs = ctm_critic.apply(
+        target_critic_params,
+        next_trajectory, next_all_obs, next_all_actions,
+        alpha=alpha, deterministic=True,
+    )
+    # next_q_vals: (B, 1, T),  next_certs: (B, 2, T)
+
+    tick_certain_next = jnp.argmax(next_certs[:, 1, :], axis=-1)  # (B,)
+
+    q_next = jnp.take_along_axis(
+        next_q_vals[:, 0, :], tick_certain_next[:, None], axis=-1
+    ).squeeze(-1)  # (B,)
+
+    cert_score = jnp.take_along_axis(
+        next_certs[:, 1, :], tick_certain_next[:, None], axis=-1
+    ).squeeze(-1)  # (B,)
+
+    # Certainty-discounted Bellman target (D3)
+    bellman_target = rewards + gamma * q_next * cert_score * (1.0 - dones)
+    bellman_target = jax.lax.stop_gradient(bellman_target)
+
+    # --- Online network ---
+    q_vals, certs = ctm_critic.apply(
+        critic_params,
+        trajectory, all_obs, all_actions,
+        alpha=alpha, deterministic=True,
+    )
+    q_flat = q_vals[:, 0, :]  # (B, T)
+
+    # tick_best: tick where Q estimate is closest to Bellman target (dual-tick loss, D2)
+    td_errors_per_tick = jnp.abs(q_flat - bellman_target[:, None])  # (B, T)
+    tick_best = jnp.argmin(td_errors_per_tick, axis=-1)             # (B,)
+
+    # tick_certain (online): most-confident tick
+    tick_certain_online = jnp.argmax(certs[:, 1, :], axis=-1)       # (B,)
+
+    q_at_best = jnp.take_along_axis(
+        q_flat, tick_best[:, None], axis=-1
+    ).squeeze(-1)  # (B,)
+
+    q_at_cert = jnp.take_along_axis(
+        q_flat, tick_certain_online[:, None], axis=-1
+    ).squeeze(-1)  # (B,)
+
+    loss_best = jnp.mean((q_at_best - bellman_target) ** 2)
+    loss_cert = jnp.mean((q_at_cert - bellman_target) ** 2)
+    loss = (loss_best + loss_cert) * 0.5
+
+    info = {
+        'ctm_critic_loss': loss,
+        'q_mean': jnp.mean(q_at_cert),
+        'bellman_target_mean': jnp.mean(bellman_target),
+        'cert_score_mean': jnp.mean(cert_score),
+        'td_error_mean': jnp.mean(jnp.abs(q_at_cert - bellman_target)),
+    }
+    return loss, info
+
+
+def compute_actor_loss_ctm(
+    actor,
+    actor_params: Any,
+    ctm_critic,
+    critic_params: Any,
+    trajectory: jax.Array,          # (B, traj_len, n_agents, 2)
+    all_obs: jax.Array,             # (B, n_agents, obs_dim)
+    agent_obs: jax.Array,           # (B, obs_dim)
+    all_actions_flat: jax.Array,    # (B, n_agents * action_dim) — current batch actions
+    agent_action_idx: int,          # which agent we're updating (0-based)
+    action_dim: int,
+    n_agents: int,
+    alpha: float = 0.0,
+    action_prior: Optional[jax.Array] = None,
+    prior_weight: float = 0.0,
+) -> Tuple[jax.Array, Dict[str, Any]]:
+    """Actor loss using CTM critic's most-certain tick Q value (D9).
+
+    Replaces agent_action_idx's action slice in all_actions_flat with the policy
+    action, then queries the CTM critic at the most-certain tick.
+
+    Loss = -mean( Q[tick_certain](s, a_policy, a_{-i}) )
+           + prior_weight * ||a_policy - a_prior||^2
+    """
+    batch_size = agent_obs.shape[0]
+
+    # Current policy action for this agent
+    policy_action = actor.apply(actor_params, agent_obs, training=False)  # (B, action_dim)
+
+    # Replace agent i's action slice in flat action vector
+    start = agent_action_idx * action_dim
+    new_actions_flat = jax.lax.dynamic_update_slice(
+        all_actions_flat,
+        policy_action,
+        (0, start),
+    )  # (B, n_agents * action_dim)
+
+    # Reshape to (B, n_agents, action_dim) for CTM critic
+    all_actions = new_actions_flat.reshape(batch_size, n_agents, action_dim)
+
+    # CTM critic forward — use most-certain tick
+    q_vals, certs = ctm_critic.apply(
+        critic_params,
+        trajectory, all_obs, all_actions,
+        alpha=alpha, deterministic=True,
+    )
+    tick_certain = jnp.argmax(certs[:, 1, :], axis=-1)  # (B,)
+    q_at_cert = jnp.take_along_axis(
+        q_vals[:, 0, :], tick_certain[:, None], axis=-1
+    ).squeeze(-1)  # (B,)
+
+    actor_loss = -jnp.mean(q_at_cert)
+
+    if prior_weight > 0.0 and action_prior is not None:
+        prior_loss = jnp.mean(jnp.sum((policy_action - action_prior) ** 2, axis=-1))
+        actor_loss = actor_loss + prior_weight * prior_loss
+
+    info = {'ctm_actor_loss': actor_loss}
+    return actor_loss, info
+
+
+def update_critic_ctm(
+    agent_state: DDPGAgentState,
+    ctm_critic,
+    optimizer: optax.GradientTransformation,
+    trajectory: jax.Array,
+    all_obs: jax.Array,
+    all_actions: jax.Array,
+    next_trajectory: jax.Array,
+    next_all_obs: jax.Array,
+    next_all_actions: jax.Array,
+    rewards: jax.Array,
+    dones: jax.Array,
+    gamma: float,
+    alpha: float = 0.0,
+) -> Tuple[DDPGAgentState, Dict[str, Any]]:
+    """CTM critic gradient update with post-update decay clamping (D8).
+
+    Returns updated DDPGAgentState and info dict.
+    """
+    def loss_fn(params):
+        return compute_ctm_critic_loss(
+            ctm_critic, params, agent_state.target_critic_params,
+            trajectory, all_obs, all_actions,
+            next_trajectory, next_all_obs, next_all_actions,
+            rewards, dones, gamma, alpha,
+        )
+
+    (loss, info), grads = jax.value_and_grad(loss_fn, has_aux=True)(agent_state.critic_params)
+    updates, new_opt_state = optimizer.update(grads, agent_state.critic_opt_state)
+    new_params = optax.apply_updates(agent_state.critic_params, updates)
+
+    # D8: clamp decay params after update to prevent r > 1 instability.
+    # Flax stores params as nested dicts; we flatten, clip matching keys, unflatten.
+    _DECAY_KEYS = frozenset({'decay_params_action', 'decay_params_out'})
+    flat_params, treedef = jax.tree_util.tree_flatten_with_path(new_params)
+    flat_params = [
+        (jnp.clip(leaf, 0.0, 15.0)
+         if any(isinstance(k, jax.tree_util.DictKey) and k.key in _DECAY_KEYS
+                for k in path)
+         else leaf)
+        for path, leaf in flat_params
+    ]
+    new_params = treedef.unflatten(flat_params)
+
+    new_agent_state = agent_state.replace(
+        critic_params=new_params,
+        critic_opt_state=new_opt_state,
+        step=agent_state.step + 1,
+    )
+    return new_agent_state, info
+
+
+def update_actor_ctm(
+    agent_state: DDPGAgentState,
+    actor,
+    ctm_critic,
+    optimizer: optax.GradientTransformation,
+    trajectory: jax.Array,
+    all_obs: jax.Array,
+    agent_obs: jax.Array,
+    all_actions_flat: jax.Array,
+    agent_action_idx: int,
+    action_dim: int,
+    n_agents: int,
+    alpha: float = 0.0,
+    action_prior: Optional[jax.Array] = None,
+    prior_weight: float = 0.0,
+) -> Tuple[DDPGAgentState, Dict[str, Any]]:
+    """CTM actor gradient update."""
+    def loss_fn(params):
+        return compute_actor_loss_ctm(
+            actor, params, ctm_critic, agent_state.critic_params,
+            trajectory, all_obs, agent_obs,
+            all_actions_flat, agent_action_idx, action_dim, n_agents,
+            alpha, action_prior, prior_weight,
+        )
+
+    (loss, info), grads = jax.value_and_grad(loss_fn, has_aux=True)(agent_state.actor_params)
+    updates, new_opt_state = optimizer.update(grads, agent_state.actor_opt_state)
+    new_params = optax.apply_updates(agent_state.actor_params, updates)
+
+    new_agent_state = agent_state.replace(
+        actor_params=new_params,
+        actor_opt_state=new_opt_state,
+    )
+    return new_agent_state, info

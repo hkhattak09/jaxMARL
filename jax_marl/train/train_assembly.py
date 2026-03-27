@@ -301,7 +301,7 @@ def create_jit_rollout_fn(
         else:
             prior_actions_batch = None
         
-        # Store transitions
+        # Store transitions (include trajectory for CTM critic if buffer is configured)
         new_maddpg_state = maddpg.store_transitions_batched(
             new_maddpg_state,
             carry.obs_batch,
@@ -310,6 +310,10 @@ def create_jit_rollout_fn(
             next_obs_batch,
             dones_batch,
             action_priors_batch=prior_actions_batch,
+            trajectory_batch=carry.env_states.trajectory,
+            trajectory_idx_batch=carry.env_states.traj_idx,
+            next_trajectory_batch=new_env_states.trajectory,
+            next_trajectory_idx_batch=new_env_states.traj_idx,
         )
         
         # Accumulate metrics

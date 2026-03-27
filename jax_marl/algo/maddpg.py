@@ -42,8 +42,10 @@ try:
         get_noise_scale,
         get_agent_params,
         load_agent_params,
+        update_critic_ctm,
+        update_actor_ctm,
     )
-    from .networks import Actor, ActorDiscrete, Critic, CriticTwin
+    from .networks import Actor, ActorDiscrete, Critic, CriticTwin, CTMCritic, create_ctm_critic
     from .buffers import ReplayBuffer, ReplayBufferState, PerAgentReplayBuffer, Transition
     from .noise import OUNoiseState, ou_noise_init
     from .utils import soft_update
@@ -66,11 +68,36 @@ except ImportError:
         get_noise_scale,
         get_agent_params,
         load_agent_params,
+        update_critic_ctm,
+        update_actor_ctm,
     )
-    from networks import Actor, ActorDiscrete, Critic, CriticTwin
+    from networks import Actor, ActorDiscrete, Critic, CriticTwin, CTMCritic, create_ctm_critic
     from buffers import ReplayBuffer, ReplayBufferState, PerAgentReplayBuffer, Transition
     from noise import OUNoiseState, ou_noise_init
     from utils import soft_update
+
+
+# ============================================================================
+# Trajectory Utilities
+# ============================================================================
+
+def _reorder_trajectory(raw_traj: jax.Array, traj_idx: jax.Array, traj_len: int) -> jax.Array:
+    """Reorder circular trajectory buffer to chronological order (oldest first, newest last).
+
+    The environment stores positions in a circular buffer.  At store time we
+    pay the gather cost once; at sample time the CTMCritic receives a clean
+    chronological sequence with no circular-buffer awareness needed.
+
+    Args:
+        raw_traj: (traj_len, n_agents, 2) circular buffer as stored by the env
+        traj_idx: scalar int — the index that was written *last* (newest entry)
+        traj_len: static length of the trajectory buffer
+
+    Returns:
+        (traj_len, n_agents, 2) chronological order: index 0 is oldest, -1 is newest
+    """
+    indices = (jnp.arange(traj_len) + traj_idx + 1) % traj_len
+    return raw_traj[indices]
 
 
 # ============================================================================
@@ -156,6 +183,24 @@ class MADDPGConfig(NamedTuple):
     target_noise: float = 0.2  # Noise added to target actions
     target_noise_clip: float = 0.5  # Clip range for target noise
 
+    # CTM temporal critic (use_ctm_critic=True replaces MLP critic with CTMCritic).
+    # Set use_td3=False when enabling CTM — TD3's twin-critic and actor updates are
+    # bypassed entirely; target smoothing (the only remaining TD3 effect) conflicts
+    # with CTM's certainty-discounted Bellman target (D3). Policy delay still applies.
+    use_ctm_critic: bool = False
+    ctm_traj_len: int = 15              # trajectory length stored by the environment
+    ctm_iterations: int = 8
+    ctm_d_model: int = 64
+    ctm_d_input: int = 128
+    ctm_memory_length: int = 5
+    ctm_heads: int = 2
+    ctm_n_synch_out: int = 8
+    ctm_n_synch_action: int = 8
+    ctm_memory_hidden_dims: int = 8
+    ctm_alpha_initial: float = 1.0      # certainty blend start (tick-variance)
+    ctm_alpha_final: float = 0.0        # certainty blend end (learned)
+    ctm_alpha_anneal_steps: int = 100000
+
 
 # ============================================================================
 # MADDPG Class
@@ -213,6 +258,17 @@ class MADDPG:
         self.critic_input_dim = self.global_state_dim + self.total_action_dim
         
         # TD3 configuration
+        if config.use_ctm_critic and config.use_td3:
+            import warnings
+            warnings.warn(
+                "use_td3=True has no effect on the CTM critic or actor update paths. "
+                "Its only active effect is adding target policy smoothing noise to "
+                "target actions before the CTM target network evaluates them. "
+                "This conflicts with CTM's certainty-discounted Bellman target (D3), "
+                "which already provides conservative Q estimates. "
+                "Set use_td3=False when use_ctm_critic=True.",
+                UserWarning, stacklevel=2,
+            )
         self.use_td3 = config.use_td3
         self.policy_delay = config.policy_delay
         self.target_noise = config.target_noise
@@ -249,7 +305,25 @@ class MADDPG:
         # self.critics[i] continues to work (they all point to the same instance).
         self.actors = [self.actor] * self.n_agents
         self.critics = [self.critic] * self.n_agents
-        
+
+        # CTM temporal critic (single shared instance, params in stacked agent_states)
+        self.use_ctm_critic = config.use_ctm_critic
+        if config.use_ctm_critic:
+            self.ctm_critic = CTMCritic(
+                iterations=config.ctm_iterations,
+                d_model=config.ctm_d_model,
+                d_input=config.ctm_d_input,
+                memory_length=config.ctm_memory_length,
+                heads=config.ctm_heads,
+                n_synch_out=config.ctm_n_synch_out,
+                n_synch_action=config.ctm_n_synch_action,
+                memory_hidden_dims=config.ctm_memory_hidden_dims,
+                n_agents=config.n_agents,
+                traj_len=config.ctm_traj_len,
+            )
+        else:
+            self.ctm_critic = None
+
         # Create optimizers
         if config.max_grad_norm is not None:
             self.actor_optimizer = optax.chain(
@@ -263,19 +337,19 @@ class MADDPG:
         else:
             self.actor_optimizer = optax.adam(config.lr_actor)
             self.critic_optimizer = optax.adam(config.lr_critic)
-        
-        # Create replay buffer
-        # Note: For MADDPG, we store flattened obs/actions since agents may have different dims
-        # The buffer is configured for the total dimensions
+
+        # Create replay buffer (with trajectory fields when CTM critic is enabled)
         self.buffer = ReplayBuffer(
             capacity=config.buffer_size,
             n_agents=config.n_agents,
-            obs_dim=max(config.obs_dims),  # Use max dim, we'll handle padding
-            action_dim=max(config.action_dims),  # Use max dim
+            obs_dim=max(config.obs_dims),
+            action_dim=max(config.action_dims),
             global_state_dim=self.global_state_dim if config.global_state_dim else None,
             use_global_state=config.global_state_dim is not None,
             store_log_probs=True,
             store_action_priors=config.prior_weight > 0,
+            traj_len=config.ctm_traj_len if config.use_ctm_critic else None,
+            store_trajectories=config.use_ctm_critic,
         )
     
     def init(self, key: jax.Array) -> MADDPGState:
@@ -293,19 +367,31 @@ class MADDPG:
 
         # Build dummy inputs that match what the networks expect at init time
         dummy_obs = jnp.zeros((1, self.obs_dims[0]))
-        dummy_ci = jnp.zeros((1, self.global_state_dim))
-        dummy_ca = jnp.zeros((1, self.total_action_dim))
+        dummy_ci  = jnp.zeros((1, self.global_state_dim))
+        dummy_ca  = jnp.zeros((1, self.total_action_dim))
 
         # Capture Python objects for the closure (not traced)
-        actor = self.actor
-        critic = self.critic
-        actor_optimizer = self.actor_optimizer
+        actor           = self.actor
+        critic          = self.critic
+        ctm_critic      = self.ctm_critic
+        use_ctm_critic  = self.use_ctm_critic
+        actor_optimizer  = self.actor_optimizer
         critic_optimizer = self.critic_optimizer
+        config           = self.config
+
+        if use_ctm_critic:
+            # CTM critic dummy inputs: (1, traj_len, n_agents, 2) etc.
+            dummy_ctm_traj    = jnp.zeros((1, config.ctm_traj_len, config.n_agents, 2))
+            dummy_ctm_obs     = jnp.zeros((1, config.n_agents, self.obs_dims[0]))
+            dummy_ctm_actions = jnp.zeros((1, config.n_agents, self.action_dims[0]))
 
         def init_one_agent(k):
             key_a, key_c = random.split(k)
             ap = actor.init(key_a, dummy_obs)
-            cp = critic.init(key_c, dummy_ci, dummy_ca)
+            if use_ctm_critic:
+                cp = ctm_critic.init(key_c, dummy_ctm_traj, dummy_ctm_obs, dummy_ctm_actions)
+            else:
+                cp = critic.init(key_c, dummy_ci, dummy_ca)
             aopt = actor_optimizer.init(ap)
             copt = critic_optimizer.init(cp)
             return DDPGAgentState(
@@ -451,11 +537,15 @@ class MADDPG:
         next_obs_batch: jax.Array,
         dones_batch: jax.Array,
         action_priors_batch: Optional[jax.Array] = None,
+        trajectory_batch: Optional[jax.Array] = None,
+        trajectory_idx_batch: Optional[jax.Array] = None,
+        next_trajectory_batch: Optional[jax.Array] = None,
+        next_trajectory_idx_batch: Optional[jax.Array] = None,
     ) -> MADDPGState:
         """Store transitions from multiple parallel environments at once.
-        
+
         This is much more efficient than storing one at a time.
-        
+
         Args:
             state: Current MADDPG state
             obs_batch: Observations, shape (n_envs, n_agents, obs_dim)
@@ -464,10 +554,27 @@ class MADDPG:
             next_obs_batch: Next observations, shape (n_envs, n_agents, obs_dim)
             dones_batch: Done flags, shape (n_envs, n_agents)
             action_priors_batch: Optional prior actions, shape (n_envs, n_agents, action_dim)
-            
+            trajectory_batch: Optional raw circular trajectory (n_envs, traj_len, n_agents, 2)
+            trajectory_idx_batch: Optional circular buffer write indices (n_envs,)
+            next_trajectory_batch: Optional raw next-step trajectory (n_envs, traj_len, n_agents, 2)
+            next_trajectory_idx_batch: Optional next-step write indices (n_envs,)
+
         Returns:
             Updated MADDPGState
         """
+        # Reorder trajectories from circular to chronological if provided (D7)
+        if self.buffer.store_trajectories and trajectory_batch is not None:
+            traj_len = trajectory_batch.shape[1]
+            trajectory_ordered = jax.vmap(
+                lambda traj, idx: _reorder_trajectory(traj, idx, traj_len)
+            )(trajectory_batch, trajectory_idx_batch)
+            next_trajectory_ordered = jax.vmap(
+                lambda traj, idx: _reorder_trajectory(traj, idx, traj_len)
+            )(next_trajectory_batch, next_trajectory_idx_batch)
+        else:
+            trajectory_ordered = None
+            next_trajectory_ordered = None
+
         # Create batched transition - shapes already match buffer format
         transitions = Transition(
             obs=obs_batch,
@@ -479,11 +586,13 @@ class MADDPG:
             next_global_state=None,
             log_probs=None,
             action_priors=action_priors_batch,
+            trajectory=trajectory_ordered,
+            next_trajectory=next_trajectory_ordered,
         )
-        
+
         # Add batch to buffer
         new_buffer_state = self.buffer.add_batch(state.buffer_state, transitions)
-        
+
         return state.replace(buffer_state=new_buffer_state)
 
     def create_jit_update(self):
@@ -500,20 +609,22 @@ class MADDPG:
                 (key, state) -> (new_state, info)
         """
         # Capture all necessary attributes in closure
-        n_agents = self.n_agents
-        actor = self.actor
-        critic = self.critic
-        buffer = self.buffer
-        actor_optimizer = self.actor_optimizer
+        n_agents        = self.n_agents
+        actor           = self.actor
+        critic          = self.critic
+        ctm_critic      = self.ctm_critic
+        use_ctm_critic  = self.use_ctm_critic
+        buffer          = self.buffer
+        actor_optimizer  = self.actor_optimizer
         critic_optimizer = self.critic_optimizer
-        config = self.config
-        obs_dims = self.obs_dims
-        action_dims = self.action_dims
-        obs_dim_0 = self.obs_dims[0]
-        action_dim_0 = self.action_dims[0]
-        use_td3 = self.use_td3
-        policy_delay = self.policy_delay
-        target_noise = self.target_noise
+        config           = self.config
+        obs_dims         = self.obs_dims
+        action_dims      = self.action_dims
+        obs_dim_0        = self.obs_dims[0]
+        action_dim_0     = self.action_dims[0]
+        use_td3          = self.use_td3
+        policy_delay     = self.policy_delay
+        target_noise     = self.target_noise
         target_noise_clip = self.target_noise_clip
 
         @jax.jit
@@ -569,46 +680,85 @@ class MADDPG:
                 # --- Critic update (vmapped over agents) ---
                 # rewards / dones: (batch, n_agents) -> (n_agents, batch, 1)
                 rewards_per_agent = batch.rewards.T[:, :, None]
-                dones_per_agent = batch.dones.T[:, :, None]
+                dones_per_agent   = batch.dones.T[:, :, None]
 
-                if use_td3:
-                    def update_one_critic(ag_state, rewards_i, dones_i):
-                        return update_critic_td3(
+                if use_ctm_critic:
+                    # --- CTM critic update path ---
+                    # Alpha annealing: 1.0 (tick-variance) → 0.0 (learned), linear (D2)
+                    alpha_range = config.ctm_alpha_initial - config.ctm_alpha_final
+                    ctm_alpha = config.ctm_alpha_initial - alpha_range * jnp.minimum(
+                        state.step.astype(jnp.float32) / config.ctm_alpha_anneal_steps, 1.0
+                    )
+
+                    # Target actions structured as (batch, n_agents, action_dim)
+                    target_actions_structured = target_actions_stacked.transpose(1, 0, 2)
+
+                    # Per-agent rewards/dones as (n_agents, batch) for vmap
+                    rewards_1d = batch.rewards.T        # (n_agents, batch)
+                    dones_1d   = batch.dones.T          # (n_agents, batch)
+
+                    def update_one_critic_ctm(ag_state, rewards_i, dones_i):
+                        return update_critic_ctm(
                             agent_state=ag_state,
-                            critic=critic,
+                            ctm_critic=ctm_critic,
                             optimizer=critic_optimizer,
-                            global_obs=global_states,
-                            all_actions=actions_flat,
+                            trajectory=batch.trajectory,
+                            all_obs=batch.obs[:, :, :obs_dim_0],
+                            all_actions=batch.actions[:, :, :action_dim_0],
+                            next_trajectory=batch.next_trajectory,
+                            next_all_obs=batch.next_obs[:, :, :obs_dim_0],
+                            next_all_actions=target_actions_structured,
                             rewards=rewards_i,
-                            next_global_obs=next_global_states,
-                            next_all_actions=target_actions,
                             dones=dones_i,
                             gamma=config.gamma,
+                            alpha=ctm_alpha,
                         )
+
+                    new_agent_states, critic_infos = jax.vmap(
+                        update_one_critic_ctm, in_axes=(0, 0, 0)
+                    )(state.agent_states, rewards_1d, dones_1d)
+                    total_critic_loss = jnp.mean(critic_infos['ctm_critic_loss'])
+
                 else:
-                    def update_one_critic(ag_state, rewards_i, dones_i):
-                        return update_critic(
-                            agent_state=ag_state,
-                            critic=critic,
-                            actor=actor,
-                            optimizer=critic_optimizer,
-                            global_obs=global_states,
-                            all_actions=actions_flat,
-                            rewards=rewards_i,
-                            next_global_obs=next_global_states,
-                            next_all_actions=target_actions,
-                            dones=dones_i,
-                            gamma=config.gamma,
-                        )
+                    # --- MLP critic update path (TD3 or DDPG) ---
+                    if use_td3:
+                        def update_one_critic(ag_state, rewards_i, dones_i):
+                            return update_critic_td3(
+                                agent_state=ag_state,
+                                critic=critic,
+                                optimizer=critic_optimizer,
+                                global_obs=global_states,
+                                all_actions=actions_flat,
+                                rewards=rewards_i,
+                                next_global_obs=next_global_states,
+                                next_all_actions=target_actions,
+                                dones=dones_i,
+                                gamma=config.gamma,
+                            )
+                    else:
+                        def update_one_critic(ag_state, rewards_i, dones_i):
+                            return update_critic(
+                                agent_state=ag_state,
+                                critic=critic,
+                                actor=actor,
+                                optimizer=critic_optimizer,
+                                global_obs=global_states,
+                                all_actions=actions_flat,
+                                rewards=rewards_i,
+                                next_global_obs=next_global_states,
+                                next_all_actions=target_actions,
+                                dones=dones_i,
+                                gamma=config.gamma,
+                            )
 
-                new_agent_states, critic_infos = jax.vmap(
-                    update_one_critic, in_axes=(0, 0, 0)
-                )(state.agent_states, rewards_per_agent, dones_per_agent)
-                total_critic_loss = jnp.mean(critic_infos['critic_loss'])
+                    new_agent_states, critic_infos = jax.vmap(
+                        update_one_critic, in_axes=(0, 0, 0)
+                    )(state.agent_states, rewards_per_agent, dones_per_agent)
+                    total_critic_loss = jnp.mean(critic_infos['critic_loss'])
 
-                # --- Actor update (vmapped, conditional on TD3 policy delay) ---
+                # --- Actor update (conditional on policy delay) ---
                 should_update_actor = jnp.logical_or(
-                    jnp.logical_not(use_td3),
+                    jnp.logical_not(use_td3 or use_ctm_critic),
                     (state.step % policy_delay) == 0
                 )
 
@@ -617,12 +767,30 @@ class MADDPG:
                 agent_indices = jnp.arange(n_agents, dtype=jnp.int32)
 
                 if config.prior_weight > 0 and batch.action_priors is not None:
-                    # (batch, n_agents, action_dim) -> (n_agents, batch, action_dim)
                     priors_per_agent = batch.action_priors.transpose(1, 0, 2)
                 else:
                     priors_per_agent = jnp.zeros((n_agents, batch_size, action_dim_0))
 
-                if use_td3:
+                if use_ctm_critic:
+                    def update_one_actor(ag_state, obs_i, agent_idx, prior_i):
+                        return update_actor_ctm(
+                            agent_state=ag_state,
+                            actor=actor,
+                            ctm_critic=ctm_critic,
+                            optimizer=actor_optimizer,
+                            trajectory=batch.trajectory,
+                            all_obs=batch.obs[:, :, :obs_dim_0],
+                            agent_obs=obs_i,
+                            all_actions_flat=actions_flat,
+                            agent_action_idx=agent_idx,
+                            action_dim=action_dim_0,
+                            n_agents=n_agents,
+                            alpha=ctm_alpha,
+                            action_prior=prior_i,
+                            prior_weight=config.prior_weight,
+                        )
+                    dummy_actor_infos = {'ctm_actor_loss': jnp.zeros(n_agents)}
+                elif use_td3:
                     def update_one_actor(ag_state, obs_i, agent_idx, prior_i):
                         return update_actor_td3(
                             agent_state=ag_state,
@@ -637,6 +805,15 @@ class MADDPG:
                             action_prior=prior_i,
                             prior_weight=config.prior_weight,
                         )
+                    dummy_actor_infos = {
+                        'actor_loss': jnp.zeros(n_agents),
+                        'actor_grad_norm': jnp.zeros(n_agents),
+                        'policy_loss': jnp.zeros(n_agents),
+                        'reg_loss': jnp.zeros(n_agents),
+                        'q_value_mean': jnp.zeros(n_agents),
+                        'action_mean': jnp.zeros(n_agents),
+                        'action_std': jnp.zeros(n_agents),
+                    }
                 else:
                     def update_one_actor(ag_state, obs_i, agent_idx, prior_i):
                         return update_actor(
@@ -652,16 +829,15 @@ class MADDPG:
                             action_prior=prior_i,
                             prior_weight=config.prior_weight,
                         )
-
-                dummy_actor_infos = {
-                    'actor_loss': jnp.zeros(n_agents),
-                    'actor_grad_norm': jnp.zeros(n_agents),
-                    'policy_loss': jnp.zeros(n_agents),
-                    'reg_loss': jnp.zeros(n_agents),
-                    'q_value_mean': jnp.zeros(n_agents),
-                    'action_mean': jnp.zeros(n_agents),
-                    'action_std': jnp.zeros(n_agents),
-                }
+                    dummy_actor_infos = {
+                        'actor_loss': jnp.zeros(n_agents),
+                        'actor_grad_norm': jnp.zeros(n_agents),
+                        'policy_loss': jnp.zeros(n_agents),
+                        'reg_loss': jnp.zeros(n_agents),
+                        'q_value_mean': jnp.zeros(n_agents),
+                        'action_mean': jnp.zeros(n_agents),
+                        'action_std': jnp.zeros(n_agents),
+                    }
 
                 def do_actor_updates(ag_states):
                     updated_states, infos = jax.vmap(
@@ -678,7 +854,11 @@ class MADDPG:
                     skip_actor_updates,
                     new_agent_states,
                 )
-                total_actor_loss = jnp.mean(actor_infos['actor_loss'])
+
+                if use_ctm_critic:
+                    total_actor_loss = jnp.mean(actor_infos['ctm_actor_loss'])
+                else:
+                    total_actor_loss = jnp.mean(actor_infos['actor_loss'])
 
                 # --- Target network update (vmapped) ---
                 new_agent_states = jax.vmap(update_targets, in_axes=(0, None))(
@@ -686,20 +866,40 @@ class MADDPG:
                 )
 
                 new_step = state.step + 1
-                # Note: noise_scale is managed by the training loop (based on total env steps),
-                # not here (which would be based on gradient update steps)
                 new_state = state.replace(
                     agent_states=new_agent_states,
                     step=new_step,
                 )
 
-                return new_state, total_actor_loss, total_critic_loss
+                # Build extra_info carrying per-update metrics
+                if use_ctm_critic:
+                    extra_info = {
+                        'ctm_q_mean':        jnp.mean(critic_infos['q_mean']),
+                        'ctm_bellman_target': jnp.mean(critic_infos['bellman_target_mean']),
+                        'ctm_cert_score':    jnp.mean(critic_infos['cert_score_mean']),
+                        'ctm_td_error':      jnp.mean(critic_infos['td_error_mean']),
+                    }
+                else:
+                    extra_info = {
+                        'ctm_q_mean':        jnp.array(0.0),
+                        'ctm_bellman_target': jnp.array(0.0),
+                        'ctm_cert_score':    jnp.array(0.0),
+                        'ctm_td_error':      jnp.array(0.0),
+                    }
+
+                return new_state, total_actor_loss, total_critic_loss, extra_info
 
             def skip_update(carry):
                 _, state = carry
-                return state, jnp.array(0.0), jnp.array(0.0)
+                empty_extra = {
+                    'ctm_q_mean':        jnp.array(0.0),
+                    'ctm_bellman_target': jnp.array(0.0),
+                    'ctm_cert_score':    jnp.array(0.0),
+                    'ctm_td_error':      jnp.array(0.0),
+                }
+                return state, jnp.array(0.0), jnp.array(0.0), empty_extra
 
-            new_state, actor_loss, critic_loss = jax.lax.cond(
+            new_state, actor_loss, critic_loss, extra_info = jax.lax.cond(
                 can_update,
                 do_update,
                 skip_update,
@@ -707,10 +907,11 @@ class MADDPG:
             )
 
             info = {
-                'can_update': can_update,
-                'actor_loss': actor_loss,
-                'critic_loss': critic_loss,
-                'buffer_size': state.buffer_state.size,
+                'can_update':    can_update,
+                'actor_loss':    actor_loss,
+                'critic_loss':   critic_loss,
+                'buffer_size':   state.buffer_state.size,
+                **extra_info,
             }
 
             return new_state, info

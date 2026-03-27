@@ -82,7 +82,22 @@ class AssemblyTrainConfig(NamedTuple):
     policy_delay: int = 2               # Update actor every N critic updates
     target_noise: float = 0.2           # Stddev of noise for target smoothing
     target_noise_clip: float = 0.5      # Clip range for target noise
-    
+
+    # ================== CTM Temporal Critic ==================
+    use_ctm_critic: bool = False        # Replace MLP critic with CTM temporal critic
+    ctm_traj_len: int = 15             # Must match AssemblyParams.traj_len (D4/D6/D7)
+    ctm_iterations: int = 8             # Internal ticks per forward pass (D10)
+    ctm_d_model: int = 64              # Number of CTM neurons (D10)
+    ctm_d_input: int = 128             # Attention embedding dimension (D10)
+    ctm_memory_length: int = 5         # Per-neuron activation history length (D10)
+    ctm_heads: int = 2                 # Attention heads, d_input must be divisible (D10)
+    ctm_n_synch_out: int = 8           # Neurons for output synchronization (D10)
+    ctm_n_synch_action: int = 8        # Neurons for attention-query synchronization (D10)
+    ctm_memory_hidden_dims: int = 8    # Hidden size in trace processor (D10)
+    ctm_alpha_initial: float = 1.0     # Initial certainty blend (1=tick-var only, D2)
+    ctm_alpha_final: float = 0.0       # Final certainty blend after annealing (D2)
+    ctm_alpha_anneal_steps: int = 100000  # Steps to anneal alpha from initial to final (D2)
+
     # ================== Training ==================
     seed: int = 226                     # Random seed
     n_episodes: int = 3000              # Total training episodes
@@ -372,6 +387,20 @@ def config_to_maddpg_config(config: AssemblyTrainConfig, obs_dim: int, action_di
         policy_delay=config.policy_delay,
         target_noise=config.target_noise,
         target_noise_clip=config.target_noise_clip,
+        # CTM temporal critic
+        use_ctm_critic=config.use_ctm_critic,
+        ctm_iterations=config.ctm_iterations,
+        ctm_d_model=config.ctm_d_model,
+        ctm_d_input=config.ctm_d_input,
+        ctm_memory_length=config.ctm_memory_length,
+        ctm_heads=config.ctm_heads,
+        ctm_n_synch_out=config.ctm_n_synch_out,
+        ctm_n_synch_action=config.ctm_n_synch_action,
+        ctm_memory_hidden_dims=config.ctm_memory_hidden_dims,
+        ctm_alpha_initial=config.ctm_alpha_initial,
+        ctm_alpha_final=config.ctm_alpha_final,
+        ctm_alpha_anneal_steps=config.ctm_alpha_anneal_steps,
+        ctm_traj_len=config.ctm_traj_len,
     )
 
 

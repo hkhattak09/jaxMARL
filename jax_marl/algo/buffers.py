@@ -31,9 +31,9 @@ from flax import struct
 
 class Transition(NamedTuple):
     """A single transition for replay buffer.
-    
+
     Compatible with maddpg_wrapper.py Transition type.
-    
+
     Attributes:
         obs: Observations for all agents (n_agents, obs_dim)
         actions: Actions taken by all agents (n_agents, action_dim)
@@ -44,6 +44,8 @@ class Transition(NamedTuple):
         next_global_state: Optional next global state (global_state_dim,)
         log_probs: Optional log probabilities of actions (n_agents,) - for PPO/importance sampling
         action_priors: Optional prior/expert actions (n_agents, action_dim) - for guided learning
+        trajectory: Optional chronological position history (traj_len, n_agents, 2) - for CTM critic
+        next_trajectory: Optional next-step position history (traj_len, n_agents, 2) - for CTM critic
     """
     obs: jnp.ndarray
     actions: jnp.ndarray
@@ -54,11 +56,13 @@ class Transition(NamedTuple):
     next_global_state: Optional[jnp.ndarray] = None
     log_probs: Optional[jnp.ndarray] = None
     action_priors: Optional[jnp.ndarray] = None
+    trajectory: Optional[jnp.ndarray] = None
+    next_trajectory: Optional[jnp.ndarray] = None
 
 
 class BatchTransition(NamedTuple):
     """Batched transitions for training.
-    
+
     Attributes:
         obs: (batch_size, n_agents, obs_dim)
         actions: (batch_size, n_agents, action_dim)
@@ -69,6 +73,8 @@ class BatchTransition(NamedTuple):
         next_global_state: (batch_size, global_state_dim) if used
         log_probs: (batch_size, n_agents) if used
         action_priors: (batch_size, n_agents, action_dim) if used
+        trajectory: (batch_size, traj_len, n_agents, 2) if used - for CTM critic
+        next_trajectory: (batch_size, traj_len, n_agents, 2) if used - for CTM critic
     """
     obs: jnp.ndarray
     actions: jnp.ndarray
@@ -79,6 +85,8 @@ class BatchTransition(NamedTuple):
     next_global_state: Optional[jnp.ndarray] = None
     log_probs: Optional[jnp.ndarray] = None
     action_priors: Optional[jnp.ndarray] = None
+    trajectory: Optional[jnp.ndarray] = None
+    next_trajectory: Optional[jnp.ndarray] = None
 
 
 # ============================================================================
@@ -88,7 +96,7 @@ class BatchTransition(NamedTuple):
 @struct.dataclass
 class ReplayBufferState:
     """State of the replay buffer.
-    
+
     Attributes:
         obs: Stored observations (capacity, n_agents, obs_dim)
         actions: Stored actions (capacity, n_agents, action_dim)
@@ -99,6 +107,8 @@ class ReplayBufferState:
         next_global_state: Stored next global states (capacity, global_state_dim) or None
         log_probs: Stored log probabilities (capacity, n_agents) or None
         action_priors: Stored prior actions (capacity, n_agents, action_dim) or None
+        trajectory: Stored position histories (capacity, traj_len, n_agents, 2) or None
+        next_trajectory: Stored next position histories (capacity, traj_len, n_agents, 2) or None
         position: Current write position
         size: Number of stored transitions
     """
@@ -111,6 +121,8 @@ class ReplayBufferState:
     next_global_state: Optional[jnp.ndarray]
     log_probs: Optional[jnp.ndarray]
     action_priors: Optional[jnp.ndarray]
+    trajectory: Optional[jnp.ndarray]
+    next_trajectory: Optional[jnp.ndarray]
     position: jnp.ndarray  # Use jnp.ndarray for JIT compatibility
     size: jnp.ndarray      # Use jnp.ndarray for JIT compatibility
 
@@ -163,9 +175,12 @@ class ReplayBuffer:
         store_log_probs: bool = False,
         store_action_priors: bool = False,
         dtype: jnp.dtype = jnp.float32,
+        traj_len: Optional[int] = None,
+        store_trajectories: bool = False,
+        trajectory_dtype: jnp.dtype = jnp.float16,
     ):
         """Initialize replay buffer configuration.
-        
+
         Args:
             capacity: Maximum number of transitions to store
             n_agents: Number of agents
@@ -176,6 +191,9 @@ class ReplayBuffer:
             store_log_probs: Whether to store log probabilities (for PPO)
             store_action_priors: Whether to store prior actions (for guided learning)
             dtype: Data type for arrays (float32 or float16 for memory)
+            traj_len: Length of position history trajectory (for CTM critic)
+            store_trajectories: Whether to store trajectory / next_trajectory fields
+            trajectory_dtype: Dtype for trajectory arrays (float16 saves ~50% vs float32)
         """
         self.capacity = capacity
         self.n_agents = n_agents
@@ -186,6 +204,9 @@ class ReplayBuffer:
         self.store_log_probs = store_log_probs
         self.store_action_priors = store_action_priors
         self.dtype = dtype
+        self.traj_len = traj_len
+        self.store_trajectories = store_trajectories and traj_len is not None
+        self.trajectory_dtype = trajectory_dtype
     
     def init(self) -> ReplayBufferState:
         """Initialize empty buffer state.
@@ -215,7 +236,18 @@ class ReplayBuffer:
             action_priors = jnp.zeros((self.capacity, self.n_agents, self.action_dim), dtype=self.dtype)
         else:
             action_priors = None
-        
+
+        if self.store_trajectories:
+            trajectory = jnp.zeros(
+                (self.capacity, self.traj_len, self.n_agents, 2), dtype=self.trajectory_dtype
+            )
+            next_trajectory = jnp.zeros(
+                (self.capacity, self.traj_len, self.n_agents, 2), dtype=self.trajectory_dtype
+            )
+        else:
+            trajectory = None
+            next_trajectory = None
+
         return ReplayBufferState(
             obs=obs,
             actions=actions,
@@ -226,6 +258,8 @@ class ReplayBuffer:
             next_global_state=next_global_state,
             log_probs=log_probs,
             action_priors=action_priors,
+            trajectory=trajectory,
+            next_trajectory=next_trajectory,
             position=jnp.array(0, dtype=jnp.int32),
             size=jnp.array(0, dtype=jnp.int32),
         )
@@ -272,13 +306,25 @@ class ReplayBuffer:
             new_action_priors = state.action_priors.at[pos].set(transition.action_priors)
         else:
             new_action_priors = state.action_priors
-        
+
+        # Update trajectories if used
+        if self.store_trajectories and transition.trajectory is not None:
+            new_trajectory = state.trajectory.at[pos].set(
+                transition.trajectory.astype(self.trajectory_dtype)
+            )
+            new_next_trajectory = state.next_trajectory.at[pos].set(
+                transition.next_trajectory.astype(self.trajectory_dtype)
+            )
+        else:
+            new_trajectory = state.trajectory
+            new_next_trajectory = state.next_trajectory
+
         # Update position (circular)
         new_position = (pos + 1) % self.capacity
-        
+
         # Update size
         new_size = jnp.minimum(state.size + 1, self.capacity)
-        
+
         return ReplayBufferState(
             obs=new_obs,
             actions=new_actions,
@@ -289,6 +335,8 @@ class ReplayBuffer:
             next_global_state=new_next_global_state,
             log_probs=new_log_probs,
             action_priors=new_action_priors,
+            trajectory=new_trajectory,
+            next_trajectory=new_next_trajectory,
             position=new_position,
             size=new_size,
         )
@@ -337,11 +385,23 @@ class ReplayBuffer:
             new_action_priors = state.action_priors.at[positions].set(transitions.action_priors)
         else:
             new_action_priors = state.action_priors
-        
+
+        # Update trajectories if used
+        if self.store_trajectories and transitions.trajectory is not None:
+            new_trajectory = state.trajectory.at[positions].set(
+                transitions.trajectory.astype(self.trajectory_dtype)
+            )
+            new_next_trajectory = state.next_trajectory.at[positions].set(
+                transitions.next_trajectory.astype(self.trajectory_dtype)
+            )
+        else:
+            new_trajectory = state.trajectory
+            new_next_trajectory = state.next_trajectory
+
         # Update position and size
         new_position = (state.position + batch_size) % self.capacity
         new_size = jnp.minimum(state.size + batch_size, self.capacity)
-        
+
         return ReplayBufferState(
             obs=new_obs,
             actions=new_actions,
@@ -352,6 +412,8 @@ class ReplayBuffer:
             next_global_state=new_next_global_state,
             log_probs=new_log_probs,
             action_priors=new_action_priors,
+            trajectory=new_trajectory,
+            next_trajectory=new_next_trajectory,
             position=new_position,
             size=new_size,
         )
@@ -398,7 +460,14 @@ class ReplayBuffer:
             action_priors = state.action_priors[indices]
         else:
             action_priors = None
-        
+
+        if self.store_trajectories:
+            trajectory = state.trajectory[indices]
+            next_trajectory = state.next_trajectory[indices]
+        else:
+            trajectory = None
+            next_trajectory = None
+
         return BatchTransition(
             obs=obs,
             actions=actions,
@@ -409,6 +478,8 @@ class ReplayBuffer:
             next_global_state=next_global_state,
             log_probs=log_probs,
             action_priors=action_priors,
+            trajectory=trajectory,
+            next_trajectory=next_trajectory,
         )
     
     def can_sample(self, state: ReplayBufferState, batch_size: int) -> jnp.ndarray:
