@@ -1272,89 +1272,48 @@ def compute_ctm_critic_loss(
     rewards: jax.Array,             # (B,)
     dones: jax.Array,               # (B,)
     gamma: float,
-    alpha: float = 0.0,             # certainty blend (1 = tick-var only, 0 = learned only)
 ) -> Tuple[jax.Array, Dict[str, Any]]:
-    """CTM critic TD loss using certainty-discounted Bellman target (D3).
+    """CTM critic TD loss using the final internal tick.
 
-    Loss = ( MSE(Q[tick_best], bellman_target)
-           + MSE(Q[tick_certain], bellman_target) ) / 2   (D2 dual-tick)
+    Bellman target = r + γ * Q_target[T-1] * (1 - done)
+    Loss           = MSE(Q[T-1], bellman_target)
 
-    Bellman target = r + γ * Q_target[tick_certain_next] * cert_score * (1 - done)
+    Per the paper's RL approach: no certainty, no adaptive tick selection.
 
     Returns:
         loss: scalar
-        info: monitoring metrics dict (D3 monitoring)
+        info: monitoring metrics dict
     """
-    # --- Target network: find most-certain tick of next state ---
-    next_q_vals, next_certs = ctm_critic.apply(
+    # --- Target network: final tick Q for Bellman target ---
+    next_q_vals = ctm_critic.apply(
         target_critic_params,
         next_trajectory, next_all_obs, next_all_actions,
-        alpha=alpha, deterministic=True,
+        deterministic=True,
     )
-    # next_q_vals: (B, 1, T),  next_certs: (B, 2, T)
+    q_next = next_q_vals[:, 0, -1]  # (B,) — final tick
 
-    tick_certain_next = jnp.argmax(next_certs[:, 1, :], axis=-1)  # (B,)
-
-    q_next = jnp.take_along_axis(
-        next_q_vals[:, 0, :], tick_certain_next[:, None], axis=-1
-    ).squeeze(-1)  # (B,)
-
-    cert_score = jnp.take_along_axis(
-        next_certs[:, 1, :], tick_certain_next[:, None], axis=-1
-    ).squeeze(-1)  # (B,)
-
-    # Certainty-discounted Bellman target (D3)
-    bellman_target = rewards + gamma * q_next * cert_score * (1.0 - dones)
+    bellman_target = rewards + gamma * q_next * (1.0 - dones)
     bellman_target = jax.lax.stop_gradient(bellman_target)
 
-    # --- Online network ---
-    q_vals, certs = ctm_critic.apply(
+    # --- Online network: final tick Q ---
+    q_vals = ctm_critic.apply(
         critic_params,
         trajectory, all_obs, all_actions,
-        alpha=alpha, deterministic=True,
+        deterministic=True,
     )
-    q_flat = q_vals[:, 0, :]  # (B, T)
+    q_final = q_vals[:, 0, -1]  # (B,)
 
-    # tick_best: tick where Q estimate is closest to Bellman target (dual-tick loss, D2)
-    td_errors_per_tick = jnp.abs(q_flat - bellman_target[:, None])  # (B, T)
-    tick_best = jnp.argmin(td_errors_per_tick, axis=-1)             # (B,)
+    loss = jnp.mean((q_final - bellman_target) ** 2)
 
-    # tick_certain (online): most-confident tick
-    tick_certain_online = jnp.argmax(certs[:, 1, :], axis=-1)       # (B,)
-
-    q_at_best = jnp.take_along_axis(
-        q_flat, tick_best[:, None], axis=-1
-    ).squeeze(-1)  # (B,)
-
-    q_at_cert = jnp.take_along_axis(
-        q_flat, tick_certain_online[:, None], axis=-1
-    ).squeeze(-1)  # (B,)
-
-    loss_best = jnp.mean((q_at_best - bellman_target) ** 2)
-    loss_cert = jnp.mean((q_at_cert - bellman_target) ** 2)
-    td_loss = (loss_best + loss_cert) * 0.5
-
-    # Auxiliary certainty loss: train cert_projector to peak at tick_best.
-    # Without this, cert_projector receives zero gradient (argmax cuts the path)
-    # and degenerates to a constant as alpha anneals toward 0.
-    # Formulation: softmax cross-entropy over ticks — encourages a peaked distribution.
-    cert_log_softmax = jax.nn.log_softmax(certs[:, 1, :], axis=-1)  # (B, T)
-    cert_aux_loss = -jnp.mean(
-        jnp.take_along_axis(cert_log_softmax, tick_best[:, None], axis=-1).squeeze(-1)
-    )
-    loss = td_loss + 0.1 * cert_aux_loss
-
-    # Fraction of samples where tick_best ≠ tick_certain (mechanism diversity check)
-    tick_diversity = jnp.mean(tick_best != tick_certain_online)
+    # Q-stability across ticks (diagnostic only)
+    q_tick_std = jnp.mean(jnp.std(q_vals[:, 0, :], axis=-1))
 
     info = {
         'ctm_critic_loss': loss,
-        'cert_aux_loss': cert_aux_loss,
-        'q_mean': jnp.mean(q_at_cert),
+        'q_mean': jnp.mean(q_final),
         'bellman_target_mean': jnp.mean(bellman_target),
-        'cert_score_mean': jnp.mean(cert_score),
-        'td_error_mean': jnp.mean(jnp.abs(q_at_cert - bellman_target)),
-        'tick_diversity': tick_diversity,
+        'td_error_mean': jnp.mean(jnp.abs(q_final - bellman_target)),
+        'q_tick_std': q_tick_std,
     }
     return loss, info
 
@@ -1371,16 +1330,15 @@ def compute_actor_loss_ctm(
     agent_action_idx: int,          # which agent we're updating (0-based)
     action_dim: int,
     n_agents: int,
-    alpha: float = 0.0,
     action_prior: Optional[jax.Array] = None,
     prior_weight: float = 0.0,
 ) -> Tuple[jax.Array, Dict[str, Any]]:
-    """Actor loss using CTM critic's most-certain tick Q value (D9).
+    """Actor loss using the CTM critic's final-tick Q value.
 
     Replaces agent_action_idx's action slice in all_actions_flat with the policy
-    action, then queries the CTM critic at the most-certain tick.
+    action, then queries the CTM critic at the final internal tick.
 
-    Loss = -mean( Q[tick_certain](s, a_policy, a_{-i}) )
+    Loss = -mean( Q[T-1](s, a_policy, a_{-i}) )
            + prior_weight * ||a_policy - a_prior||^2
     """
     batch_size = agent_obs.shape[0]
@@ -1399,18 +1357,15 @@ def compute_actor_loss_ctm(
     # Reshape to (B, n_agents, action_dim) for CTM critic
     all_actions = new_actions_flat.reshape(batch_size, n_agents, action_dim)
 
-    # CTM critic forward — use most-certain tick
-    q_vals, certs = ctm_critic.apply(
+    # CTM critic forward — final tick Q (no certainty per paper's RL approach)
+    q_vals = ctm_critic.apply(
         critic_params,
         trajectory, all_obs, all_actions,
-        alpha=alpha, deterministic=True,
+        deterministic=True,
     )
-    tick_certain = jnp.argmax(certs[:, 1, :], axis=-1)  # (B,)
-    q_at_cert = jnp.take_along_axis(
-        q_vals[:, 0, :], tick_certain[:, None], axis=-1
-    ).squeeze(-1)  # (B,)
+    q_final = q_vals[:, 0, -1]  # (B,) — final tick
 
-    actor_loss = -jnp.mean(q_at_cert)
+    actor_loss = -jnp.mean(q_final)
 
     if prior_weight > 0.0 and action_prior is not None:
         prior_loss = jnp.mean(jnp.sum((policy_action - action_prior) ** 2, axis=-1))
@@ -1433,9 +1388,8 @@ def update_critic_ctm(
     rewards: jax.Array,
     dones: jax.Array,
     gamma: float,
-    alpha: float = 0.0,
 ) -> Tuple[DDPGAgentState, Dict[str, Any]]:
-    """CTM critic gradient update with post-update decay clamping (D8).
+    """CTM critic gradient update with post-update decay clamping.
 
     Returns updated DDPGAgentState and info dict.
     """
@@ -1444,7 +1398,7 @@ def update_critic_ctm(
             ctm_critic, params, agent_state.target_critic_params,
             trajectory, all_obs, all_actions,
             next_trajectory, next_all_obs, next_all_actions,
-            rewards, dones, gamma, alpha,
+            rewards, dones, gamma,
         )
 
     (loss, info), grads = jax.value_and_grad(loss_fn, has_aux=True)(agent_state.critic_params)
@@ -1483,7 +1437,6 @@ def update_actor_ctm(
     agent_action_idx: int,
     action_dim: int,
     n_agents: int,
-    alpha: float = 0.0,
     action_prior: Optional[jax.Array] = None,
     prior_weight: float = 0.0,
 ) -> Tuple[DDPGAgentState, Dict[str, Any]]:
@@ -1493,7 +1446,7 @@ def update_actor_ctm(
             actor, params, ctm_critic, agent_state.critic_params,
             trajectory, all_obs, agent_obs,
             all_actions_flat, agent_action_idx, action_dim, n_agents,
-            alpha, action_prior, prior_weight,
+            action_prior, prior_weight,
         )
 
     (loss, info), grads = jax.value_and_grad(loss_fn, has_aux=True)(agent_state.actor_params)

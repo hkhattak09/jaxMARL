@@ -193,13 +193,8 @@ class MADDPGConfig(NamedTuple):
     ctm_d_model: int = 64
     ctm_d_input: int = 128
     ctm_memory_length: int = 5
-    ctm_heads: int = 2
     ctm_n_synch_out: int = 8
-    ctm_n_synch_action: int = 8
     ctm_memory_hidden_dims: int = 8
-    ctm_alpha_initial: float = 1.0      # certainty blend start (tick-variance)
-    ctm_alpha_final: float = 0.0        # certainty blend end (learned)
-    ctm_alpha_anneal_steps: int = 100000
 
 
 # ============================================================================
@@ -314,9 +309,7 @@ class MADDPG:
                 d_model=config.ctm_d_model,
                 d_input=config.ctm_d_input,
                 memory_length=config.ctm_memory_length,
-                heads=config.ctm_heads,
                 n_synch_out=config.ctm_n_synch_out,
-                n_synch_action=config.ctm_n_synch_action,
                 memory_hidden_dims=config.ctm_memory_hidden_dims,
                 n_agents=config.n_agents,
                 traj_len=config.ctm_traj_len,
@@ -684,12 +677,6 @@ class MADDPG:
 
                 if use_ctm_critic:
                     # --- CTM critic update path ---
-                    # Alpha annealing: 1.0 (tick-variance) → 0.0 (learned), linear (D2)
-                    alpha_range = config.ctm_alpha_initial - config.ctm_alpha_final
-                    ctm_alpha = config.ctm_alpha_initial - alpha_range * jnp.minimum(
-                        state.step.astype(jnp.float32) / config.ctm_alpha_anneal_steps, 1.0
-                    )
-
                     # Target actions structured as (batch, n_agents, action_dim)
                     target_actions_structured = target_actions_stacked.transpose(1, 0, 2)
 
@@ -711,7 +698,6 @@ class MADDPG:
                             rewards=rewards_i,
                             dones=dones_i,
                             gamma=config.gamma,
-                            alpha=ctm_alpha,
                         )
 
                     new_agent_states, critic_infos = jax.vmap(
@@ -785,7 +771,6 @@ class MADDPG:
                             agent_action_idx=agent_idx,
                             action_dim=action_dim_0,
                             n_agents=n_agents,
-                            alpha=ctm_alpha,
                             action_prior=prior_i,
                             prior_weight=config.prior_weight,
                         )
