@@ -1332,10 +1332,21 @@ def compute_ctm_critic_loss(
 
     loss_best = jnp.mean((q_at_best - bellman_target) ** 2)
     loss_cert = jnp.mean((q_at_cert - bellman_target) ** 2)
-    loss = (loss_best + loss_cert) * 0.5
+    td_loss = (loss_best + loss_cert) * 0.5
+
+    # Auxiliary certainty loss: train cert_projector to peak at tick_best.
+    # Without this, cert_projector receives zero gradient (argmax cuts the path)
+    # and degenerates to a constant as alpha anneals toward 0.
+    # Formulation: softmax cross-entropy over ticks — encourages a peaked distribution.
+    cert_log_softmax = jax.nn.log_softmax(certs[:, 1, :], axis=-1)  # (B, T)
+    cert_aux_loss = -jnp.mean(
+        jnp.take_along_axis(cert_log_softmax, tick_best[:, None], axis=-1).squeeze(-1)
+    )
+    loss = td_loss + 0.1 * cert_aux_loss
 
     info = {
         'ctm_critic_loss': loss,
+        'cert_aux_loss': cert_aux_loss,
         'q_mean': jnp.mean(q_at_cert),
         'bellman_target_mean': jnp.mean(bellman_target),
         'cert_score_mean': jnp.mean(cert_score),
@@ -1452,7 +1463,6 @@ def update_critic_ctm(
     new_agent_state = agent_state.replace(
         critic_params=new_params,
         critic_opt_state=new_opt_state,
-        step=agent_state.step + 1,
     )
     return new_agent_state, info
 

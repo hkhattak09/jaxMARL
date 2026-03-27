@@ -118,7 +118,7 @@ def test_critic_loss_non_negative():
 
 def test_critic_loss_info_keys():
     required_keys = {'ctm_critic_loss', 'q_mean', 'bellman_target_mean',
-                     'cert_score_mean', 'td_error_mean'}
+                     'cert_score_mean', 'td_error_mean', 'cert_aux_loss'}
     key = random.PRNGKey(6)
     critic, params = create_ctm_critic(key, **CTM_KWARGS)
     _, target_params = create_ctm_critic(random.PRNGKey(7), **CTM_KWARGS)

@@ -91,7 +91,11 @@ def _setup(key):
 # update_critic_ctm
 # ---------------------------------------------------------------------------
 
-def test_critic_update_increments_step():
+def test_critic_update_does_not_modify_step():
+    """update_critic_ctm does not own the step counter.
+    Step is incremented once per full update by update_targets, consistent with
+    the TD3 path (update_critic_td3 also does not touch step).
+    """
     key = random.PRNGKey(0)
     critic, actor, opt, state, batch = _setup(key)
 
@@ -100,7 +104,8 @@ def test_critic_update_increments_step():
         **batch, gamma=0.99, alpha=0.0,
     )
 
-    assert int(new_state.step) == 1
+    assert int(new_state.step) == int(state.step), \
+        "update_critic_ctm should not modify step — update_targets owns that"
 
 
 def test_critic_params_change():
@@ -136,7 +141,7 @@ def test_critic_update_loss_finite():
 
 def test_critic_update_returns_info_keys():
     required = {'ctm_critic_loss', 'q_mean', 'bellman_target_mean',
-                'cert_score_mean', 'td_error_mean'}
+                'cert_score_mean', 'td_error_mean', 'cert_aux_loss'}
     key = random.PRNGKey(3)
     critic, actor, opt, state, batch = _setup(key)
 
@@ -239,7 +244,11 @@ def test_non_decay_params_not_clamped():
 # update_actor_ctm
 # ---------------------------------------------------------------------------
 
-def test_actor_update_increments_step():
+def test_actor_update_does_not_modify_step():
+    """update_actor_ctm does not own the step counter.
+    Step is incremented once per full jit_update call at the MADDPGState level.
+    This matches update_actor_td3 behaviour.
+    """
     key = random.PRNGKey(7)
     critic, actor, opt, state, batch = _setup(key)
 
@@ -258,7 +267,8 @@ def test_actor_update_increments_step():
         alpha=0.0,
     )
 
-    assert int(new_state.step) == 1
+    assert int(new_state.step) == int(state.step), \
+        "update_actor_ctm should not modify step — that is MADDPGState's responsibility"
 
 
 def test_actor_params_change():
