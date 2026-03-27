@@ -1171,6 +1171,18 @@ class CTMCritic(nn.Module):
         init_carry = (activated_state, state_trace,
                       decay_alpha_action, decay_beta_action,
                       decay_alpha_out, decay_beta_out)
+
+        # During init() only: prime every @nn.compact sub-module so Flax registers
+        # their parameters *before* lax.scan traces _tick_body.  When scan traces
+        # the body it sees self.param() mutations as side-effects, which causes
+        # UnexpectedTracerError under jax.vmap(ctm_critic.init(...)).  Once params
+        # exist the lookup is a pure read — no side-effect.  init_carry is a tuple
+        # of immutable JAX arrays so the discarded output cannot affect the scan.
+        # is_mutable_collection('params') is False during apply(), so this adds no
+        # overhead at training time.
+        if self.is_mutable_collection('params'):
+            _tick_body(init_carry, None)
+
         _, (q_ticks, synch_ticks) = jax.lax.scan(
             _tick_body, init_carry, xs=None, length=self.iterations
         )
