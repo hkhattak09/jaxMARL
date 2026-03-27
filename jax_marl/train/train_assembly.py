@@ -669,15 +669,32 @@ def create_jit_train_step(
     # This compiles the entire agent update loop into a single XLA computation
     jit_maddpg_update = maddpg.create_jit_update()
     
+    _CTM_ZERO = {
+        'ctm_q_mean':         jnp.array(0.0),
+        'ctm_bellman_target': jnp.array(0.0),
+        'ctm_cert_score':     jnp.array(0.0),
+        'ctm_td_error':       jnp.array(0.0),
+        'ctm_cert_aux_loss':  jnp.array(0.0),
+        'ctm_tick_diversity': jnp.array(0.0),
+    }
+
     def single_update(carry, _):
         """Single update step for lax.scan."""
         maddpg_state, key = carry
         key, update_key = random.split(key)
         new_state, update_info = jit_maddpg_update(update_key, maddpg_state)
-        actor_loss = update_info.get("actor_loss", jnp.array(0.0))
-        critic_loss = update_info.get("critic_loss", jnp.array(0.0))
-        return (new_state, key), (actor_loss, critic_loss)
-    
+        scan_out = {
+            'actor_loss':         update_info.get('actor_loss',         jnp.array(0.0)),
+            'critic_loss':        update_info.get('critic_loss',        jnp.array(0.0)),
+            'ctm_q_mean':         update_info.get('ctm_q_mean',         jnp.array(0.0)),
+            'ctm_bellman_target': update_info.get('ctm_bellman_target', jnp.array(0.0)),
+            'ctm_cert_score':     update_info.get('ctm_cert_score',     jnp.array(0.0)),
+            'ctm_td_error':       update_info.get('ctm_td_error',       jnp.array(0.0)),
+            'ctm_cert_aux_loss':  update_info.get('ctm_cert_aux_loss',  jnp.array(0.0)),
+            'ctm_tick_diversity': update_info.get('ctm_tick_diversity', jnp.array(0.0)),
+        }
+        return (new_state, key), scan_out
+
     @jax.jit
     def jit_train_step(
         maddpg_state: MADDPGState,
@@ -685,38 +702,40 @@ def create_jit_train_step(
     ) -> Tuple[MADDPGState, Dict[str, Any]]:
         """JIT-compiled training step with lax.scan."""
         buffer_size = maddpg_state.buffer_state.size
-        
+
         def do_updates(state_key):
             state, k = state_key
-            (final_state, _), (actor_losses, critic_losses) = jax.lax.scan(
+            (final_state, _), scan_outs = jax.lax.scan(
                 single_update,
                 (state, k),
                 jnp.arange(updates_per_step),
             )
-            mean_actor_loss = jnp.mean(actor_losses)
-            mean_critic_loss = jnp.mean(critic_losses)
-            return final_state, mean_actor_loss, mean_critic_loss
-        
+            return final_state, {k: jnp.mean(v) for k, v in scan_outs.items()}
+
         def skip_updates(state_key):
             state, _ = state_key
-            return state, jnp.array(0.0), jnp.array(0.0)
-        
-        # Use lax.cond to conditionally skip updates
+            return state, {
+                'actor_loss':         jnp.array(0.0),
+                'critic_loss':        jnp.array(0.0),
+                **_CTM_ZERO,
+            }
+
         can_update = buffer_size >= warmup_steps
-        final_state, actor_loss, critic_loss = jax.lax.cond(
+        final_state, means = jax.lax.cond(
             can_update,
             do_updates,
             skip_updates,
             (maddpg_state, key),
         )
-        
+
         info = {
-            "actor_loss": actor_loss,
-            "critic_loss": critic_loss,
-            "buffer_size": buffer_size,
-            "updated": can_update,
+            'actor_loss':  means['actor_loss'],
+            'critic_loss': means['critic_loss'],
+            'buffer_size': buffer_size,
+            'updated':     can_update,
+            **{k: means[k] for k in _CTM_ZERO},
         }
-        
+
         return final_state, info
     
     return jit_train_step
@@ -780,6 +799,10 @@ def train(
     print("Creating JIT-compiled training step...")
     jit_train_step = create_jit_train_step(maddpg, config)
     print("JIT training step created (will compile on first use)")
+
+    # CTM runtime validator (no-op when use_ctm_critic=False)
+    from ctm_validation import CTMValidator
+    ctm_validator = CTMValidator(config)
     
     # Load checkpoint if resuming
     start_episode = 0
@@ -828,10 +851,26 @@ def train(
             memory_report(training_state.maddpg_state, training_state, config,
                           label="After episode 0 (post-compile, true peak)")
 
-        # Convert JAX arrays to Python scalars for logging
+        # Convert JAX arrays to Python scalars once (forces D2H sync, then cached)
         buffer_size_val = int(train_info['buffer_size'])
         actor_loss_val = float(train_info['actor_loss']) if train_info['updated'] else 0.0
         critic_loss_val = float(train_info['critic_loss']) if train_info['updated'] else 0.0
+        if config.use_ctm_critic:
+            ctm_scalars = {
+                'ctm_q_mean':         float(train_info.get('ctm_q_mean',         0.0)),
+                'ctm_bellman_target':  float(train_info.get('ctm_bellman_target',  0.0)),
+                'ctm_cert_score':      float(train_info.get('ctm_cert_score',      0.0)),
+                'ctm_td_error':        float(train_info.get('ctm_td_error',        0.0)),
+                'ctm_cert_aux_loss':   float(train_info.get('ctm_cert_aux_loss',   0.0)),
+                'ctm_tick_diversity':  float(train_info.get('ctm_tick_diversity',  0.0)),
+                'updated':             train_info.get('updated', False),
+            }
+        else:
+            ctm_scalars = {}
+
+        # CTM runtime checks — operates on already-materialized Python floats, no extra D2H
+        for warning in ctm_validator.check(ctm_scalars, episode=episode):
+            print(warning)
         
         # Calculate elapsed time
         elapsed_time = time.time() - training_start
@@ -872,6 +911,8 @@ def train(
             if train_info.get("updated", False):
                 log_entry["actor_loss"] = actor_loss_val
                 log_entry["critic_loss"] = critic_loss_val
+                if config.use_ctm_critic:
+                    log_entry.update({k: v for k, v in ctm_scalars.items() if k != 'updated'})
             training_history.append(log_entry)
             
             # Periodically save to file

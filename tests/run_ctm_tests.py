@@ -14,7 +14,8 @@ from pathlib import Path
 
 # All CTM test modules in order (fast → slow)
 CTM_TEST_FILES = [
-    "jax_marl/algo/tests/test_ctm_reorder.py",   # pure JAX, no model init
+    "jax_marl/algo/tests/test_ctm_validator.py",  # pure Python, no JAX — fastest
+    "jax_marl/algo/tests/test_ctm_reorder.py",    # pure JAX, no model init
     "jax_marl/algo/tests/test_ctm_buffer.py",     # buffer ops
     "jax_marl/algo/tests/test_ctm_encoder.py",    # TrajectoryEncoder forward
     "jax_marl/algo/tests/test_ctm_critic.py",     # CTMCritic forward

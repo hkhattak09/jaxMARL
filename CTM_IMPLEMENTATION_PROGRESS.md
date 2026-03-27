@@ -1,6 +1,6 @@
 # CTM Temporal Critic — Implementation Progress
 
-## Status: Complete (Phases 1–4). Ready to enable and run.
+## Status: Complete (Phases 1–5). Ready to enable and run.
 
 ---
 
@@ -167,6 +167,54 @@ No other code changes required — the hot path branches at JIT trace time.
 
 ---
 
+## Phase 5: Metric Surfacing & Runtime Validation
+
+### Metric pipeline (`single_update` → `lax.scan` → `jit_train_step` → training loop)
+
+`single_update` in `train_assembly.py` now returns a dict with all 6 CTM scalars as scan outputs.
+`jit_train_step` means them over the scan axis and returns them alongside `actor_loss`, `critic_loss`, etc.
+
+### `CTMValidator` (`jax_marl/train/ctm_validation.py`)
+
+Stateful pure-Python validator instantiated once before the training loop:
+
+```python
+ctm_validator = CTMValidator(config)
+```
+
+Called after every `jit_train_step`:
+
+```python
+for warning in ctm_validator.check(train_info, episode=episode):
+    print(warning)
+```
+
+Checks run (only when `use_ctm_critic=True` and `updated=True`):
+
+| Check | Threshold | Severity |
+|---|---|---|
+| Q/bellman/td_error/cert_aux finiteness | any non-finite | CRITICAL |
+| Q divergence | `|q_mean| > 500` | WARNING |
+| cert_score saturation | rolling mean < 0.05 or > 0.995 | WARNING |
+| tick_diversity stalled | rolling mean < 0.01 after 200 updates | WARNING (rate-limited) |
+| cert_aux early collapse | mean < 1e-6 before update 500 | WARNING |
+| alpha transition | alpha crosses 0.5 (once) | INFO |
+
+### JSON log entries (when `updated=True` and `use_ctm_critic=True`)
+
+```json
+{
+  "ctm_q_mean": ...,
+  "ctm_bellman_target": ...,
+  "ctm_cert_score": ...,
+  "ctm_td_error": ...,
+  "ctm_cert_aux_loss": ...,
+  "ctm_tick_diversity": ...
+}
+```
+
+---
+
 ## Monitoring Metrics (logged per update when CTM enabled)
 
 | Key | What it tracks |
@@ -175,4 +223,5 @@ No other code changes required — the hot path branches at JIT trace time.
 | `ctm_bellman_target` | Mean Bellman target — should be stable |
 | `ctm_cert_score` | Mean certainty score used in target discount — if persistently near 0, targets are near-zero (conservative but may slow learning) |
 | `ctm_td_error` | Mean `|Q[tick_certain] - target|` — primary convergence signal |
-| `cert_aux_loss` | Certainty head cross-entropy — should decrease as the head learns which tick to be confident at |
+| `ctm_cert_aux_loss` | Certainty head cross-entropy — should decrease as the head learns which tick to be confident at |
+| `ctm_tick_diversity` | Fraction of batch where tick_best ≠ tick_certain — CTM mechanism activity indicator |

@@ -874,17 +874,21 @@ class MADDPG:
                 # Build extra_info carrying per-update metrics
                 if use_ctm_critic:
                     extra_info = {
-                        'ctm_q_mean':        jnp.mean(critic_infos['q_mean']),
-                        'ctm_bellman_target': jnp.mean(critic_infos['bellman_target_mean']),
-                        'ctm_cert_score':    jnp.mean(critic_infos['cert_score_mean']),
-                        'ctm_td_error':      jnp.mean(critic_infos['td_error_mean']),
+                        'ctm_q_mean':          jnp.mean(critic_infos['q_mean']),
+                        'ctm_bellman_target':  jnp.mean(critic_infos['bellman_target_mean']),
+                        'ctm_cert_score':      jnp.mean(critic_infos['cert_score_mean']),
+                        'ctm_td_error':        jnp.mean(critic_infos['td_error_mean']),
+                        'ctm_cert_aux_loss':   jnp.mean(critic_infos['cert_aux_loss']),
+                        'ctm_tick_diversity':  jnp.mean(critic_infos['tick_diversity']),
                     }
                 else:
                     extra_info = {
-                        'ctm_q_mean':        jnp.array(0.0),
-                        'ctm_bellman_target': jnp.array(0.0),
-                        'ctm_cert_score':    jnp.array(0.0),
-                        'ctm_td_error':      jnp.array(0.0),
+                        'ctm_q_mean':          jnp.array(0.0),
+                        'ctm_bellman_target':  jnp.array(0.0),
+                        'ctm_cert_score':      jnp.array(0.0),
+                        'ctm_td_error':        jnp.array(0.0),
+                        'ctm_cert_aux_loss':   jnp.array(0.0),
+                        'ctm_tick_diversity':  jnp.array(0.0),
                     }
 
                 return new_state, total_actor_loss, total_critic_loss, extra_info
@@ -892,10 +896,12 @@ class MADDPG:
             def skip_update(carry):
                 _, state = carry
                 empty_extra = {
-                    'ctm_q_mean':        jnp.array(0.0),
-                    'ctm_bellman_target': jnp.array(0.0),
-                    'ctm_cert_score':    jnp.array(0.0),
-                    'ctm_td_error':      jnp.array(0.0),
+                    'ctm_q_mean':          jnp.array(0.0),
+                    'ctm_bellman_target':  jnp.array(0.0),
+                    'ctm_cert_score':      jnp.array(0.0),
+                    'ctm_td_error':        jnp.array(0.0),
+                    'ctm_cert_aux_loss':   jnp.array(0.0),
+                    'ctm_tick_diversity':  jnp.array(0.0),
                 }
                 return state, jnp.array(0.0), jnp.array(0.0), empty_extra
 

@@ -1344,6 +1344,9 @@ def compute_ctm_critic_loss(
     )
     loss = td_loss + 0.1 * cert_aux_loss
 
+    # Fraction of samples where tick_best ≠ tick_certain (mechanism diversity check)
+    tick_diversity = jnp.mean(tick_best != tick_certain_online)
+
     info = {
         'ctm_critic_loss': loss,
         'cert_aux_loss': cert_aux_loss,
@@ -1351,6 +1354,7 @@ def compute_ctm_critic_loss(
         'bellman_target_mean': jnp.mean(bellman_target),
         'cert_score_mean': jnp.mean(cert_score),
         'td_error_mean': jnp.mean(jnp.abs(q_at_cert - bellman_target)),
+        'tick_diversity': tick_diversity,
     }
     return loss, info
 
