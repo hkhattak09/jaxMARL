@@ -1032,15 +1032,19 @@ class CTMCritic(nn.Module):
 
         return decay_alpha / jnp.sqrt(decay_beta), decay_alpha, decay_beta
 
-    def _multi_head_attention(self, q, kv):
-        """Scaled dot-product multi-head cross-attention."""
-        B, S, _ = kv.shape
+    def _multi_head_attention(self, q, k_proj, v_proj):
+        """Scaled dot-product multi-head cross-attention with precomputed K, V.
+
+        K and V are computed once outside the tick loop (kv is constant across
+        ticks) and passed in to avoid redundant projections every iteration.
+        """
+        B, S, _ = k_proj.shape
         H = self.heads
         D = self.head_dim
 
         q_proj = self.attn_q_proj(q)   # (B, 1, d_input)
-        k_proj = self.attn_k_proj(kv)  # (B, S, d_input)
-        v_proj = self.attn_v_proj(kv)  # (B, S, d_input)
+        # k_proj: (B, S, d_input) — precomputed from kv before the tick loop
+        # v_proj: (B, S, d_input) — precomputed from kv before the tick loop
 
         q_heads = q_proj.reshape(B, 1, H, D).transpose(0, 2, 1, 3)  # (B, H, 1, D)
         k_heads = k_proj.reshape(B, S, H, D).transpose(0, 2, 1, 3)  # (B, H, S, D)
@@ -1088,6 +1092,11 @@ class CTMCritic(nn.Module):
         # --- Encode trajectory into kv tokens (replaces CNN, D1 / D4) ---
         kv, _ = self.traj_encoder(trajectory, all_obs, all_actions)
 
+        # Precompute K and V once — kv is constant across all ticks.
+        # Avoids redundant projection (attn_k_proj, attn_v_proj) every iteration.
+        k_proj = self.attn_k_proj(kv)  # (B, S, d_input)
+        v_proj = self.attn_v_proj(kv)  # (B, S, d_input)
+
         # --- Initialise recurrent state ---
         state_trace = jnp.broadcast_to(
             self.start_trace[None, :, :], (B, self.d_model, self.memory_length)
@@ -1099,27 +1108,31 @@ class CTMCritic(nn.Module):
         r_action = jnp.exp(-decay_params_action)[None, :]  # (1, synch_size_action)
         r_out    = jnp.exp(-decay_params_out)[None, :]     # (1, synch_size_out)
 
-        # Seed output EMA with initial state
+        # Seed output EMA with initial state (None path: alpha=pairwise, beta=ones)
         _, decay_alpha_out, decay_beta_out = self._compute_synchronisation(
             activated_state, None, None, r_out, 'out'
         )
-        decay_alpha_action = None
-        decay_beta_action  = None
+        # Action EMA: zeros instead of None — on the first tick the else branch gives
+        # r*0 + pairwise = pairwise  and  r*0 + 1.0 = 1.0, identical to the None path.
+        decay_alpha_action = jnp.zeros((B, self.synch_repr_size_action))
+        decay_beta_action  = jnp.zeros((B, self.synch_repr_size_action))
 
-        all_q_t      = []  # list of (B, 1) Q-values per tick
-        all_synch_t  = []  # list of (B, synch_size_out) for certainty projection
-
-        # --- Recurrent loop (unrolled by XLA) ---
-        for _ in range(self.iterations):
+        # --- Recurrent loop via lax.scan ---
+        # Compiles the body once (vs 10 unrolled copies), improves XLA scheduling.
+        # Carry: all mutable recurrent state. Outputs: (q_t, synch_out) per tick.
+        def _tick_body(carry, _):
+            (activated_state, state_trace,
+             decay_alpha_action, decay_beta_action,
+             decay_alpha_out, decay_beta_out) = carry
 
             # 1. Action synch → attention query
             synch_action, decay_alpha_action, decay_beta_action = self._compute_synchronisation(
                 activated_state, decay_alpha_action, decay_beta_action, r_action, 'action'
             )
 
-            # 2. Cross-attention over trajectory tokens
-            q_query  = self.q_proj_linear(synch_action)[:, None, :]  # (B, 1, d_input)
-            attn_out = self._multi_head_attention(q_query, kv).squeeze(1)  # (B, d_input)
+            # 2. Cross-attention using precomputed K, V
+            q_query  = self.q_proj_linear(synch_action)[:, None, :]        # (B, 1, d_input)
+            attn_out = self._multi_head_attention(q_query, k_proj, v_proj).squeeze(1)  # (B, d_input)
 
             # 3. Synapse — GLU state update
             pre = jnp.concatenate([attn_out, activated_state], axis=-1)
@@ -1149,19 +1162,30 @@ class CTMCritic(nn.Module):
 
             # 7. Q-value head
             q_t = self.q_projector(synch_out)  # (B, 1)
-            all_q_t.append(q_t)
-            all_synch_t.append(synch_out)      # (B, synch_size_out)
 
-        # Stack across ticks
-        q_values = jnp.stack(all_q_t, axis=-1)    # (B, 1, T)
+            new_carry = (activated_state, state_trace,
+                         decay_alpha_action, decay_beta_action,
+                         decay_alpha_out, decay_beta_out)
+            return new_carry, (q_t, synch_out)
+
+        init_carry = (activated_state, state_trace,
+                      decay_alpha_action, decay_beta_action,
+                      decay_alpha_out, decay_beta_out)
+        _, (q_ticks, synch_ticks) = jax.lax.scan(
+            _tick_body, init_carry, xs=None, length=self.iterations
+        )
+        # q_ticks:     (T, B, 1)               → reshape to (B, 1, T)
+        # synch_ticks: (T, B, synch_size_out)  → indexed as synch_ticks[t] = (B, synch_size_out)
+
+        q_values = jnp.moveaxis(q_ticks, 0, -1)   # (B, 1, T)
         q_flat   = q_values[:, 0, :]               # (B, T)
 
         # --- Hybrid certainty (D2) ---
         cert_list = []
         for t in range(self.iterations):
-            # Learned component: sigmoid of projector applied to synch_out
+            # Learned component: sigmoid of projector applied to synch_out at tick t
             cert_raw = jax.nn.sigmoid(
-                self.cert_projector(all_synch_t[t])
+                self.cert_projector(synch_ticks[t])
             ).squeeze(-1)  # (B,)
 
             # Structural component: tick-variance (parameter-free, calibrated from step 0)
