@@ -322,75 +322,75 @@ config = None
 #                               of expected training updates:
 #                               ~(3000 - 31 warmup) eps × 20 updates = 59k updates
 #                               34% × 59k ≈ 20000
-# config = AssemblyTrainConfig(
-#     # Environment — identical to MLP config
-#     n_agents=30,
-#     n_parallel_envs=8,
-#     arena_size=5.0,
-#     agent_radius=0.035,
-#     r_avoid=None,
-#     max_velocity=0.8,
-#     max_acceleration=1.0,
-#     # Observation
-#     k_neighbors=6,
-#     d_sen=0.4,
-#     include_self_state=True,
-#     # Physics
-#     dt=0.1,
-#     # Episode
-#     max_steps=200,
-#     # Domain randomization
-#     randomize_shape=True,
-#     randomize_rotation=True,
-#     randomize_scale=True,
-#     randomize_offset=True,
-#     # Reward
-#     reward_mode=0,
-#     # Algorithm — identical to MLP config
-#     hidden_dim=256,
-#     lr_actor=1e-4,
-#     lr_critic=3e-4,
-#     gamma=0.95,
-#     tau=0.01,
-#     buffer_size=80000,
-#     batch_size=2048,
-#     warmup_steps=50000,
-#     noise_scale_initial=0.9,
-#     noise_scale_final=0.5,
-#     noise_decay_steps=2112000,
-#     updates_per_step=20,
-#     prior_weight=0.5,
-#     # TD3 off, CTM on
-#     use_td3=False,
-#     use_ctm_critic=True,
-#     # CTM architecture
-#     ctm_traj_len=15,
-#     ctm_iterations=10,
-#     ctm_d_model=128,
-#     ctm_d_input=128,
-#     ctm_memory_length=5,
-#     ctm_heads=2,
-#     ctm_n_synch_out=16,
-#     ctm_n_synch_action=16,
-#     ctm_memory_hidden_dims=16,
-#     # Certainty annealing: structural (tick-var) → learned, over ~20k updates
-#     ctm_alpha_initial=1.0,
-#     ctm_alpha_final=0.0,
-#     ctm_alpha_anneal_steps=20000,
-#     # Training — identical to MLP config
-#     seed=226,
-#     n_episodes=3000,
-#     log_interval=10,
-#     save_interval=100,
-#     eval_interval=500,
-#     eval_save_video=True,
-#     eval_video_fps=10,
-#     # Paths
-#     shape_file=None,
-#     checkpoint_dir=None,
-#     log_dir=None,
-#     eval_dir=None,
-# )
+config = AssemblyTrainConfig(
+    # Environment — identical to MLP config
+    n_agents=30,
+    n_parallel_envs=8,
+    arena_size=5.0,
+    agent_radius=0.035,
+    r_avoid=None,
+    max_velocity=0.8,
+    max_acceleration=1.0,
+    # Observation
+    k_neighbors=6,
+    d_sen=0.4,
+    include_self_state=True,
+    # Physics
+    dt=0.1,
+    # Episode
+    max_steps=200,
+    # Domain randomization
+    randomize_shape=True,
+    randomize_rotation=True,
+    randomize_scale=True,
+    randomize_offset=True,
+    # Reward
+    reward_mode=0,
+    # Algorithm — identical to MLP config
+    hidden_dim=256,
+    lr_actor=1e-4,
+    lr_critic=3e-4,
+    gamma=0.95,
+    tau=0.01,
+    buffer_size=80000,
+    batch_size=2048,
+    warmup_steps=50000,
+    noise_scale_initial=0.9,
+    noise_scale_final=0.5,
+    noise_decay_steps=2112000,
+    updates_per_step=20,
+    prior_weight=0.5,
+    # TD3 off, CTM on
+    use_td3=False,
+    use_ctm_critic=True,
+    # CTM architecture
+    ctm_traj_len=15,
+    ctm_iterations=10,
+    ctm_d_model=128,
+    ctm_d_input=128,
+    ctm_memory_length=5,
+    ctm_heads=2,
+    ctm_n_synch_out=16,
+    ctm_n_synch_action=16,
+    ctm_memory_hidden_dims=16,
+    # Certainty annealing: structural (tick-var) → learned, over ~20k updates
+    ctm_alpha_initial=1.0,
+    ctm_alpha_final=0.0,
+    ctm_alpha_anneal_steps=20000,
+    # Training — identical to MLP config
+    seed=226,
+    n_episodes=3000,
+    log_interval=10,
+    save_interval=100,
+    eval_interval=500,
+    eval_save_video=True,
+    eval_video_fps=10,
+    # Paths
+    shape_file=None,
+    checkpoint_dir=None,
+    log_dir=None,
+    eval_dir=None,
+)
 
 
 # ============================================================================
