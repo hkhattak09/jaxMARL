@@ -142,14 +142,16 @@ def test_nan_q_no_diverge_warning():
 
 def test_cert_score_low_warning():
     v = CTMValidator(_Cfg())
-    _pump(v, 20, ctm_cert_score=0.01)
+    # Pump 19: history has 19 entries. Explicit call is the 20th — first time
+    # len >= 20 is satisfied, rate limit 20-(-500)=520 >= 500, so it fires here.
+    _pump(v, 19, ctm_cert_score=0.01)
     warnings = v.check(_good_info(ctm_cert_score=0.01))
     assert any('cert_score' in w for w in warnings)
 
 
 def test_cert_score_high_warning():
     v = CTMValidator(_Cfg())
-    _pump(v, 20, ctm_cert_score=0.999)
+    _pump(v, 19, ctm_cert_score=0.999)
     warnings = v.check(_good_info(ctm_cert_score=0.999))
     assert any('cert_score' in w for w in warnings)
 
@@ -164,22 +166,24 @@ def test_cert_score_normal_no_warning():
 def test_cert_score_rate_limited():
     # Warn once, then suppress until CERT_WARN_FREQ more updates
     v = CTMValidator(_Cfg())
-    _pump(v, 20, ctm_cert_score=0.01)
-    first = v.check(_good_info(ctm_cert_score=0.01))
+    _pump(v, 19, ctm_cert_score=0.01)
+    first = v.check(_good_info(ctm_cert_score=0.01))   # 20th update — fires
     assert any('cert_score' in w for w in first)
-    # next call immediately after should be suppressed
-    second = v.check(_good_info(ctm_cert_score=0.01))
+    second = v.check(_good_info(ctm_cert_score=0.01))  # 21st — rate-limited
     assert not any('cert_score' in w for w in second)
 
 
 def test_cert_score_warns_again_after_freq():
     v = CTMValidator(_Cfg())
-    _pump(v, 20, ctm_cert_score=0.01)
-    v.check(_good_info(ctm_cert_score=0.01))  # first warn, sets _last_cert_warn
-    # advance past CERT_WARN_FREQ
-    _pump(v, v.CERT_WARN_FREQ, ctm_cert_score=0.01)
-    warnings = v.check(_good_info(ctm_cert_score=0.01))
-    assert any('cert_score' in w for w in warnings)
+    _pump(v, 19, ctm_cert_score=0.01)
+    first = v.check(_good_info(ctm_cert_score=0.01))  # fires, sets _last_cert_warn
+    assert any('cert_score' in w for w in first)
+    # Directly rewind _last_cert_warn to simulate CERT_WARN_FREQ steps elapsed.
+    # Pumping that many calls would re-trigger internally at exactly CERT_WARN_FREQ,
+    # again leaving the assertion call rate-limited.
+    v._last_cert_warn -= v.CERT_WARN_FREQ
+    second = v.check(_good_info(ctm_cert_score=0.01))
+    assert any('cert_score' in w for w in second)
 
 
 def test_cert_score_not_warned_before_20_samples():
@@ -200,25 +204,28 @@ def test_cert_score_not_warned_before_20_samples():
 
 def test_diversity_no_warning_before_threshold():
     v = CTMValidator(_Cfg())
-    # Feed < DIVERSITY_WARN_STEPS updates with zero diversity
-    _pump(v, v.DIVERSITY_WARN_STEPS - 1, ctm_tick_diversity=0.0)
+    # _update_count increments at the top of check(), so the Nth call results in
+    # count=N. The check fires when count >= DIVERSITY_WARN_STEPS (200).
+    # Pump 198 → explicit call is count=199 → 199 >= 200 False → no warn.
+    _pump(v, v.DIVERSITY_WARN_STEPS - 2, ctm_tick_diversity=0.0)
     warnings = v.check(_good_info(ctm_tick_diversity=0.0))
     assert not any('tick_diversity' in w for w in warnings)
 
 
 def test_diversity_warning_after_threshold():
     v = CTMValidator(_Cfg())
-    _pump(v, v.DIVERSITY_WARN_STEPS, ctm_tick_diversity=0.0)
+    # Pump 199 → explicit call is count=200 → 200 >= 200 True → fires.
+    _pump(v, v.DIVERSITY_WARN_STEPS - 1, ctm_tick_diversity=0.0)
     warnings = v.check(_good_info(ctm_tick_diversity=0.0))
     assert any('tick_diversity' in w for w in warnings)
 
 
 def test_diversity_rate_limited():
     v = CTMValidator(_Cfg())
-    _pump(v, v.DIVERSITY_WARN_STEPS, ctm_tick_diversity=0.0)
-    first = v.check(_good_info(ctm_tick_diversity=0.0))
+    _pump(v, v.DIVERSITY_WARN_STEPS - 1, ctm_tick_diversity=0.0)
+    first = v.check(_good_info(ctm_tick_diversity=0.0))   # count=200 — fires
     assert any('tick_diversity' in w for w in first)
-    second = v.check(_good_info(ctm_tick_diversity=0.0))
+    second = v.check(_good_info(ctm_tick_diversity=0.0))  # count=201 — rate-limited
     assert not any('tick_diversity' in w for w in second)
 
 
