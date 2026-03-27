@@ -385,7 +385,7 @@ config = AssemblyTrainConfig(
     n_episodes=3000,
     log_interval=10,
     save_interval=100,
-    eval_interval=500,
+    eval_interval=100,
     eval_save_video=True,
     eval_video_fps=10,
     # Paths
