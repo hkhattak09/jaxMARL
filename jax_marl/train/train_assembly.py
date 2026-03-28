@@ -601,7 +601,7 @@ def run_eval_episode(
     # Reset single environment for eval (not parallel - we want one clean trajectory)
     # Disable domain randomization for eval — fixed shape, rotation, scale, offset
     eval_params = params.replace(
-        randomize_shape=False,
+        randomize_shape=True,
         randomize_rotation=False,
         randomize_scale=False,
         randomize_offset=False,
