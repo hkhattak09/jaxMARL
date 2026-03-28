@@ -262,7 +262,7 @@ config = AssemblyTrainConfig(
     noise_scale_final=0.05,
     noise_decay_steps=800000,
     updates_per_step=20,
-    prior_weight=0.03,
+    prior_weight=0.05,
     # Training
     seed=226,
     n_episodes=3000,
