@@ -579,8 +579,15 @@ class AssemblySwarmEnv(MultiAgentEnv):
         valid_assignments = cell_assignments & grid_mask[:, None]
         cells_per_agent = jnp.sum(valid_assignments, axis=0).astype(jnp.float32)  # (n_agents,)
 
-        # Paper formula: M2 = sum(nv,i - nv_mean)^2 / nrobot = var(cells_per_agent)
-        uniformity = jnp.var(cells_per_agent)
+        # C++ formula (assembly_wrapper.py line 126-127):
+        #   uniform = var(cells_per_agent)
+        #   metric_3 = (uniform - min(cells_per_agent)) / (max(cells_per_agent) - min(cells_per_agent))
+        # Returns 0 when all agents have equal cells (perfect uniformity → max == min).
+        uniform = jnp.var(cells_per_agent)
+        min_cells = jnp.min(cells_per_agent)
+        max_cells = jnp.max(cells_per_agent)
+        range_cells = max_cells - min_cells
+        uniformity = jnp.where(range_cells > 0, (uniform - min_cells) / range_cells, 0.0)
         return uniformity
     
     def _update_occupancy(

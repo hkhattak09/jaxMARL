@@ -521,10 +521,8 @@ class MADDPG:
             key: jax.Array,
             state: MADDPGState,
         ) -> Tuple[MADDPGState, Dict[str, Any]]:
-            """JIT-compiled update for all agents."""
-
-            # Check if we can update
-            can_update = buffer.can_sample(state.buffer_state, config.batch_size)
+            """JIT-compiled update for all agents.
+            Caller must ensure buffer has enough samples before calling."""
 
             def do_update(carry):
                 key, state = carry
@@ -695,22 +693,11 @@ class MADDPG:
 
                 return new_state, total_actor_loss, total_critic_loss
 
-            def skip_update(carry):
-                _, state = carry
-                return state, jnp.array(0.0), jnp.array(0.0)
-
-            new_state, actor_loss, critic_loss = jax.lax.cond(
-                can_update,
-                do_update,
-                skip_update,
-                (key, state),
-            )
+            new_state, actor_loss, critic_loss = do_update((key, state))
 
             info = {
-                'can_update': can_update,
                 'actor_loss': actor_loss,
                 'critic_loss': critic_loss,
-                'buffer_size': state.buffer_state.size,
             }
 
             return new_state, info
