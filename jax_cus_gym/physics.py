@@ -364,19 +364,26 @@ def integrate_dynamics(
     
     # Compute acceleration (F = ma)
     accelerations = total_force / physics_params.agent_mass
-    
-    # Update velocity (Euler integration)
-    new_velocities = velocities + accelerations * physics_params.dt
-    
-    # Clamp velocity
-    new_velocities = jnp.clip(
-        new_velocities, 
-        -physics_params.vel_max, 
+
+    # Pre-clamp current velocity (matches C++ prior policy clamping — no overshoot)
+    velocities_clamped = jnp.clip(
+        velocities,
+        -physics_params.vel_max,
         physics_params.vel_max
     )
-    
-    # Update position
-    new_positions = positions + new_velocities * physics_params.dt
+
+    # Update position using old clamped velocity (explicit Euler, matches C++ integration timing)
+    new_positions = positions + velocities_clamped * physics_params.dt
+
+    # Update velocity
+    new_velocities = velocities_clamped + accelerations * physics_params.dt
+
+    # Clamp velocity
+    new_velocities = jnp.clip(
+        new_velocities,
+        -physics_params.vel_max,
+        physics_params.vel_max
+    )
     
     # Handle boundaries
     if not is_boundary:

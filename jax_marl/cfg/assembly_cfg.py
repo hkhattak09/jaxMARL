@@ -219,7 +219,7 @@ config = None
 # # Use this for full training runs
 config = AssemblyTrainConfig(
     # Environment
-    n_agents=20,
+    n_agents=30,
     n_parallel_envs=8,
     arena_size=5.0,
     agent_radius=0.035,             # Matches MARL-LLM original

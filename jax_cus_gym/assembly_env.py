@@ -423,14 +423,20 @@ class AssemblySwarmEnv(MultiAgentEnv):
         half_arena = params.arena_size / 2
         pw_rel_pos, pw_distances, _ = compute_pairwise_distances(new_positions)
         n = new_positions.shape[0]
-        _col_mat = (pw_distances < params.reward_params.collision_threshold) & ~jnp.eye(n, dtype=bool)
+
+        # Fix 1: Use r_avoid (C++ formula) as collision threshold for reward gating,
+        # not 2*agent_radius. C++ blocks reward when agents are within r_avoid of each other.
+        r_avoid = compute_r_avoid(
+            new_state.grid_mask, self.n_agents, new_state.l_cell, params.r_avoid
+        )
+        _col_mat = (pw_distances < r_avoid) & ~jnp.eye(n, dtype=bool)
         is_colliding = jnp.any(_col_mat, axis=1)
 
         # Update occupancy tracking (uses pre-computed is_colliding)
         new_state = self._update_occupancy(new_state, params, is_colliding)
 
-        # Get observations
-        obs = self._get_observations(new_state, params)
+        # Get observations (pass r_avoid for occupied-cell filtering in grid obs)
+        obs = self._get_observations(new_state, params, r_avoid=r_avoid)
 
         # Neighbor indices for rewards (reuses pre-computed distances/rel_pos)
         _, _, _, neighbor_indices = get_k_nearest_neighbors_all_agents(
@@ -573,14 +579,8 @@ class AssemblySwarmEnv(MultiAgentEnv):
         valid_assignments = cell_assignments & grid_mask[:, None]
         cells_per_agent = jnp.sum(valid_assignments, axis=0).astype(jnp.float32)  # (n_agents,)
 
-        # Match MARL-LLM formula exactly:
-        # uniform = var(cells_per_agent)
-        # metric = (uniform - min(cells_per_agent)) / (max(cells_per_agent) - min(cells_per_agent))
-        variance = jnp.var(cells_per_agent)
-        min_c = jnp.min(cells_per_agent)
-        max_c = jnp.max(cells_per_agent)
-        denom = max_c - min_c
-        uniformity = jnp.where(denom > 1e-8, (variance - min_c) / denom, 0.0)
+        # Paper formula: M2 = sum(nv,i - nv_mean)^2 / nrobot = var(cells_per_agent)
+        uniformity = jnp.var(cells_per_agent)
         return uniformity
     
     def _update_occupancy(
@@ -604,13 +604,16 @@ class AssemblySwarmEnv(MultiAgentEnv):
         in_target = jnp.any(in_valid_cell, axis=1)
 
         # Grid cell is occupied if ANY agent is within r_avoid/2
-        r_avoid = params.reward_params.collision_threshold
+        # Fix 1: Use C++ formula for r_avoid, not params.reward_params.collision_threshold
+        r_avoid = compute_r_avoid(
+            state.grid_mask, self._n_agents, state.l_cell, params.r_avoid
+        )
         occupied_by_any = jnp.any(agent_to_grid_dist < r_avoid / 2, axis=0)
         occupied_mask = occupied_by_any & state.grid_mask
 
         if precomputed_is_colliding is None:
             precomputed_is_colliding, _ = compute_agent_collisions(
-                state.positions, params.reward_params.collision_threshold
+                state.positions, r_avoid
             )
 
         return state.replace(
@@ -647,8 +650,13 @@ class AssemblySwarmEnv(MultiAgentEnv):
         self,
         state: AssemblyState,
         params: AssemblyParams,
+        r_avoid: Optional[float] = None,
     ) -> jnp.ndarray:
         """Compute observations (internal use)."""
+        if r_avoid is None:
+            r_avoid = compute_r_avoid(
+                state.grid_mask, self._n_agents, state.l_cell, params.r_avoid
+            )
         return compute_observations(
             state.positions,
             state.velocities,
@@ -658,6 +666,7 @@ class AssemblySwarmEnv(MultiAgentEnv):
             False,
             params.arena_size / 2,
             params.arena_size / 2,
+            r_avoid=r_avoid,
         )
     
     def get_obs(
@@ -761,6 +770,28 @@ class AssemblySwarmEnv(MultiAgentEnv):
     def get_action_dim(self, params: AssemblyParams) -> int:
         """Get action dimension (always 2 for 2D acceleration)."""
         return 2
+
+
+def compute_fixed_r_avoid_from_library(shape_library, n_agents: int) -> float:
+    """Compute a single fixed r_avoid from the shape library, matching C++ initialization.
+
+    C++ computes r_avoid ONCE at init using the minimum n_grid and l_cell across ALL
+    training shapes, then keeps it fixed for the entire training run.
+
+    Formula (from assembly.py line 124):
+        r_avoid = round(sqrt(4 * min(n_grids) / (n_agents * pi)) * min(l_cells), 2)
+
+    Args:
+        shape_library: ShapeLibrary with all training shapes
+        n_agents: Number of agents
+
+    Returns:
+        Fixed r_avoid scalar (Python float, rounded to 2 decimals)
+    """
+    import math
+    min_n_grid = float(jnp.min(shape_library.n_grids))
+    min_l_cell = float(jnp.min(shape_library.l_cells))
+    return round(math.sqrt(4.0 * min_n_grid / (n_agents * math.pi)) * min_l_cell, 2)
 
 
 def compute_r_avoid(
@@ -996,6 +1027,7 @@ __all__ = [
     "make_vec_env",
     # Utilities
     "compute_prior_policy",
+    "compute_fixed_r_avoid_from_library",
     "RewardSharingMode",
 ]
 

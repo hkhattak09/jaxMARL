@@ -203,6 +203,7 @@ def compute_grid_observations(
     grid_centers: jax.Array,
     d_sen: float,
     num_obs_grid_max: int,
+    r_avoid: Optional[float] = None,
 ) -> Tuple[jax.Array, jax.Array, jax.Array]:
     """Compute grid cell observations for all agents.
     
@@ -234,9 +235,39 @@ def compute_grid_observations(
     
     # Mask for cells within sensing range
     in_range = distances < d_sen  # (n_agents, n_grid)
-    
-    # Set out-of-range distances to infinity for sorting
-    distances_masked = jnp.where(in_range, distances, jnp.inf)
+
+    if r_avoid is not None and r_avoid > 0:
+        # Fix 2: Filter out grid cells occupied by other agents.
+        # Fix 3: Use asymmetric sensing radius d_sen + r_avoid/2 to detect occupying agents.
+        #
+        # Agent j is "relevant" for agent i if dist(i,j) < d_sen + r_avoid/2.
+        # Cell c is occupied (from agent i's perspective) if any relevant j≠i has dist(j,c) < r_avoid/2.
+
+        # Pairwise agent-to-agent distances: (n_agents, n_agents)
+        pairwise_dist = jnp.linalg.norm(
+            positions[:, None, :] - positions[None, :, :], axis=-1
+        )
+        # Which agents j are within extended range of agent i?
+        in_extended_range = pairwise_dist < (d_sen + r_avoid / 2.0)  # (n_agents, n_agents)
+        # Exclude self from occupancy check
+        in_extended_range = in_extended_range & ~jnp.eye(n_agents, dtype=bool)
+
+        # Which agents are near each cell? distances[j,c] = dist(agent j, cell c)
+        agent_near_cell = distances < (r_avoid / 2.0)  # (n_agents, n_grid)
+
+        # Cell c is occupied from agent i's perspective if any j satisfies:
+        #   in_extended_range[i,j] AND agent_near_cell[j,c]
+        # Broadcast: (n_agents, n_agents, 1) & (1, n_agents, n_grid) → reduce over axis=1
+        occupied_by_others = jnp.any(
+            in_extended_range[:, :, None] & agent_near_cell[None, :, :],
+            axis=1,
+        )  # (n_agents, n_grid)
+
+        # Only show cells in sensing range that are NOT occupied by other agents
+        distances_masked = jnp.where(in_range & ~occupied_by_others, distances, jnp.inf)
+    else:
+        # Default: show all in-range cells (no occupancy filtering)
+        distances_masked = jnp.where(in_range, distances, jnp.inf)
     
     # Get indices of nearest grid cells (up to num_obs_grid_max)
     # We need to handle the case where num_obs_grid_max > n_grid
@@ -322,6 +353,7 @@ def compute_observations(
     is_periodic: bool = False,
     boundary_width: float = 2.4,
     boundary_height: float = 2.4,
+    r_avoid: Optional[float] = None,
 ) -> jax.Array:
     """Compute observations for all agents.
     
@@ -356,9 +388,10 @@ def compute_observations(
         positions, velocities, grid_centers, l_cell
     )
     
-    # 3. Get grid cell observations
+    # 3. Get grid cell observations (r_avoid enables occupied-cell filtering)
     rel_grid_positions, grid_masks, nearest_grid_idx = compute_grid_observations(
-        positions, grid_centers, obs_params.d_sen, obs_params.num_obs_grid_max
+        positions, grid_centers, obs_params.d_sen, obs_params.num_obs_grid_max,
+        r_avoid=r_avoid,
     )
     
     # 4. Normalize if requested

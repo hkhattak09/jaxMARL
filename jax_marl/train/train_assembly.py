@@ -73,6 +73,7 @@ from assembly_env import (
     make_vec_env,
     compute_prior_policy,
     compute_r_avoid,
+    compute_fixed_r_avoid_from_library,
 )
 from shape_loader import load_shapes_from_pickle
 
@@ -161,7 +162,13 @@ def create_training_state(
     
     # Override params with config values
     params = config_to_assembly_params(config)
-    
+
+    # Fix: compute r_avoid once from shape library (matches C++ which uses np.min across all shapes at init)
+    if shape_library is not None and params.r_avoid is None:
+        fixed_r_avoid = compute_fixed_r_avoid_from_library(shape_library, config.n_agents)
+        params = params.replace(r_avoid=fixed_r_avoid)
+        print(f"Fixed r_avoid from library: {fixed_r_avoid:.4f} m")
+
     # Create vectorized functions with updated params
     @jax.jit
     def vec_reset(keys: jnp.ndarray):
