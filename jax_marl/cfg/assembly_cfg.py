@@ -223,7 +223,7 @@ config = AssemblyTrainConfig(
     n_parallel_envs=8,
     arena_size=5.0,
     agent_radius=0.035,             # Matches MARL-LLM original
-    r_avoid=0.1,                    # Paper: ravoid=0.1m (fixed, matches LAMARL paper)
+    r_avoid=None,                   # Auto-compute from grid density
     max_velocity=0.8,
     max_acceleration=1.0,
     # Observation
