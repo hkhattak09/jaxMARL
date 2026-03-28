@@ -515,7 +515,7 @@ class AssemblySwarmEnv(MultiAgentEnv):
             positions: Agent positions (n_agents, 2)
             
         Returns:
-            Normalized uniformity metric (0 to 1), lower is more uniform
+            Coefficient of variation of nearest-neighbor distances (>=0), lower is more uniform
         """
         n_agents = positions.shape[0]
         
@@ -529,14 +529,11 @@ class AssemblySwarmEnv(MultiAgentEnv):
         # Minimum distance for each agent to its nearest neighbor
         min_dists = jnp.min(pairwise_dist, axis=1)  # (n_agents,)
 
-        # Match MARL-LLM formula exactly:
-        # uniform = var(min_dists)
-        # metric = (uniform - min(min_dists)) / (max(min_dists) - min(min_dists))
-        variance = jnp.var(min_dists)
-        min_d = jnp.min(min_dists)
-        max_d = jnp.max(min_dists)
-        denom = max_d - min_d
-        uniformity = jnp.where(denom > 1e-8, (variance - min_d) / denom, 0.0)
+        # Coefficient of variation: std / mean
+        # 0 = perfectly uniform spacing, higher = more clustered
+        mean_dist = jnp.mean(min_dists)
+        std_dist = jnp.std(min_dists)
+        uniformity = jnp.where(mean_dist > 1e-8, std_dist / mean_dist, 0.0)
         return uniformity
     
     def _compute_voronoi_uniformity(
