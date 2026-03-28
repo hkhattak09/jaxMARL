@@ -686,7 +686,8 @@ def create_jit_train_step(
         config: Training configuration
         
     Returns:
-        jit_train_step: JIT-compiled training function
+        (jit_train_step, warmup_steps): JIT-compiled training function and warmup threshold.
+        Caller must check buffer size >= warmup_steps before calling jit_train_step.
     """
     updates_per_step = config.updates_per_step
     warmup_steps = config.warmup_steps
@@ -709,43 +710,20 @@ def create_jit_train_step(
         maddpg_state: MADDPGState,
         key: jax.Array,
     ) -> Tuple[MADDPGState, Dict[str, Any]]:
-        """JIT-compiled training step with lax.scan."""
-        buffer_size = maddpg_state.buffer_state.size
-        
-        def do_updates(state_key):
-            state, k = state_key
-            (final_state, _), (actor_losses, critic_losses) = jax.lax.scan(
-                single_update,
-                (state, k),
-                jnp.arange(updates_per_step),
-            )
-            mean_actor_loss = jnp.mean(actor_losses)
-            mean_critic_loss = jnp.mean(critic_losses)
-            return final_state, mean_actor_loss, mean_critic_loss
-        
-        def skip_updates(state_key):
-            state, _ = state_key
-            return state, jnp.array(0.0), jnp.array(0.0)
-        
-        # Use lax.cond to conditionally skip updates
-        can_update = buffer_size >= warmup_steps
-        final_state, actor_loss, critic_loss = jax.lax.cond(
-            can_update,
-            do_updates,
-            skip_updates,
+        """JIT-compiled training step with lax.scan. Always runs updates.
+        Caller is responsible for warmup gating (Python-level check)."""
+        (final_state, _), (actor_losses, critic_losses) = jax.lax.scan(
+            single_update,
             (maddpg_state, key),
+            jnp.arange(updates_per_step),
         )
-        
         info = {
-            "actor_loss": actor_loss,
-            "critic_loss": critic_loss,
-            "buffer_size": buffer_size,
-            "updated": can_update,
+            "actor_loss": jnp.mean(actor_losses),
+            "critic_loss": jnp.mean(critic_losses),
         }
-        
         return final_state, info
-    
-    return jit_train_step
+
+    return jit_train_step, warmup_steps
 
 
 # ============================================================================
@@ -804,7 +782,7 @@ def train(
     
     # Create JIT-compiled training step
     print("Creating JIT-compiled training step...")
-    jit_train_step = create_jit_train_step(maddpg, config)
+    jit_train_step, warmup_steps = create_jit_train_step(maddpg, config)
     print("JIT training step created (will compile on first use)")
     
     # Load checkpoint if resuming
@@ -836,28 +814,31 @@ def train(
             jit_rollout_fn=jit_rollout_fn, explore=True
         )
         
-        # Perform gradient updates (JIT-compiled)
+        # Perform gradient updates (JIT-compiled) — only after warmup
         train_start = time.time()
-        key, train_key = random.split(training_state.key)
-        maddpg_state, train_info = jit_train_step(
-            training_state.maddpg_state, train_key
-        )
-        training_state = training_state.replace(
-            maddpg_state=maddpg_state,
-            key=key,
-        )
+        buffer_size_val = int(training_state.maddpg_state.buffer_state.size)
+        updated = buffer_size_val >= warmup_steps
+        if updated:
+            key, train_key = random.split(training_state.key)
+            maddpg_state, train_info = jit_train_step(
+                training_state.maddpg_state, train_key
+            )
+            training_state = training_state.replace(
+                maddpg_state=maddpg_state,
+                key=key,
+            )
+            actor_loss_val = float(train_info['actor_loss'])
+            critic_loss_val = float(train_info['critic_loss'])
+        else:
+            actor_loss_val = 0.0
+            critic_loss_val = 0.0
         train_time = time.time() - train_start
 
-        # After first episode: XLA executables are now compiled and live on device.
-        # This gives the true peak memory including compiled kernels.
-        if episode == start_episode and verbose:
+        # After first training update: XLA executables are compiled. True peak memory.
+        if updated and not hasattr(train, '_post_compile_reported') and verbose:
+            train._post_compile_reported = True
             memory_report(training_state.maddpg_state, training_state, config,
-                          label="After episode 0 (post-compile, true peak)")
-
-        # Convert JAX arrays to Python scalars for logging
-        buffer_size_val = int(train_info['buffer_size'])
-        actor_loss_val = float(train_info['actor_loss']) if train_info['updated'] else 0.0
-        critic_loss_val = float(train_info['critic_loss']) if train_info['updated'] else 0.0
+                          label="After first training update (post-compile, true peak)")
         
         # Calculate elapsed time
         elapsed_time = time.time() - training_start
@@ -898,7 +879,7 @@ def train(
                 "n_parallel_envs": config.n_parallel_envs,
                 "total_transitions": episode_metrics.get("total_transitions", 0),
             }
-            if train_info.get("updated", False):
+            if updated:
                 log_entry["actor_loss"] = actor_loss_val
                 log_entry["critic_loss"] = critic_loss_val
             training_history.append(log_entry)
