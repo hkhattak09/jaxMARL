@@ -236,38 +236,32 @@ def compute_grid_observations(
     # Mask for cells within sensing range
     in_range = distances < d_sen  # (n_agents, n_grid)
 
-    if r_avoid is not None and r_avoid > 0:
-        # Fix 2: Filter out grid cells occupied by other agents.
-        # Fix 3: Use asymmetric sensing radius d_sen + r_avoid/2 to detect occupying agents.
-        #
-        # Agent j is "relevant" for agent i if dist(i,j) < d_sen + r_avoid/2.
-        # Cell c is occupied (from agent i's perspective) if any relevant j≠i has dist(j,c) < r_avoid/2.
+    # Fix 2 & 3: Filter grid cells occupied by other agents using asymmetric sensing radius.
+    # Always compute using JAX ops so this is JIT/vmap-safe.
+    # When r_avoid=0, r_avoid/2=0 so agent_near_cell is always False → no filtering (degenerate).
+    r_avoid_val = 0.0 if r_avoid is None else r_avoid
 
-        # Pairwise agent-to-agent distances: (n_agents, n_agents)
-        pairwise_dist = jnp.linalg.norm(
-            positions[:, None, :] - positions[None, :, :], axis=-1
-        )
-        # Which agents j are within extended range of agent i?
-        in_extended_range = pairwise_dist < (d_sen + r_avoid / 2.0)  # (n_agents, n_agents)
-        # Exclude self from occupancy check
-        in_extended_range = in_extended_range & ~jnp.eye(n_agents, dtype=bool)
+    # Pairwise agent-to-agent distances: (n_agents, n_agents)
+    pairwise_dist = jnp.linalg.norm(
+        positions[:, None, :] - positions[None, :, :], axis=-1
+    )
+    # Which agents j are within extended range of agent i?
+    in_extended_range = pairwise_dist < (d_sen + r_avoid_val / 2.0)  # (n_agents, n_agents)
+    # Exclude self
+    in_extended_range = in_extended_range & ~jnp.eye(n_agents, dtype=bool)
 
-        # Which agents are near each cell? distances[j,c] = dist(agent j, cell c)
-        agent_near_cell = distances < (r_avoid / 2.0)  # (n_agents, n_grid)
+    # Which agents are near each cell?
+    agent_near_cell = distances < (r_avoid_val / 2.0)  # (n_agents, n_grid)
 
-        # Cell c is occupied from agent i's perspective if any j satisfies:
-        #   in_extended_range[i,j] AND agent_near_cell[j,c]
-        # Broadcast: (n_agents, n_agents, 1) & (1, n_agents, n_grid) → reduce over axis=1
-        occupied_by_others = jnp.any(
-            in_extended_range[:, :, None] & agent_near_cell[None, :, :],
-            axis=1,
-        )  # (n_agents, n_grid)
+    # Cell c is occupied from agent i's perspective if any j satisfies:
+    #   in_extended_range[i,j] AND agent_near_cell[j,c]
+    occupied_by_others = jnp.any(
+        in_extended_range[:, :, None] & agent_near_cell[None, :, :],
+        axis=1,
+    )  # (n_agents, n_grid)
 
-        # Only show cells in sensing range that are NOT occupied by other agents
-        distances_masked = jnp.where(in_range & ~occupied_by_others, distances, jnp.inf)
-    else:
-        # Default: show all in-range cells (no occupancy filtering)
-        distances_masked = jnp.where(in_range, distances, jnp.inf)
+    # Only show cells in sensing range that are NOT occupied by other agents
+    distances_masked = jnp.where(in_range & ~occupied_by_others, distances, jnp.inf)
     
     # Get indices of nearest grid cells (up to num_obs_grid_max)
     # We need to handle the case where num_obs_grid_max > n_grid
