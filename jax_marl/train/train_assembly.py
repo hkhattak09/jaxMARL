@@ -444,33 +444,37 @@ def run_episode(
         maddpg_state = final_carry.maddpg_state
         env_states = final_carry.env_states
         episode_rewards = final_carry.episode_rewards
-        final_coverage = final_carry.final_coverage
         total_collision = final_carry.total_collision
-        final_distribution_uniformity = final_carry.final_distribution_uniformity
-        final_voronoi_uniformity = final_carry.final_voronoi_uniformity
         num_steps = config.max_steps  # Always runs full episode with scan
+        # Compute mean and std over all timesteps (paper format)
+        coverage_mean = float(jnp.mean(all_metrics.coverage))
+        coverage_std = float(jnp.std(all_metrics.coverage))
+        dist_unif_mean = float(jnp.mean(all_metrics.distribution_uniformity))
+        dist_unif_std = float(jnp.std(all_metrics.distribution_uniformity))
+        voronoi_mean = float(jnp.mean(all_metrics.voronoi_uniformity))
+        voronoi_std = float(jnp.std(all_metrics.voronoi_uniformity))
         
     else:
         # Fallback to Python loop (slower but useful for debugging)
         episode_rewards = jnp.zeros(n_envs)
-        final_coverage = jnp.array(0.0)
         total_collision = jnp.array(0.0)
-        final_distribution_uniformity = jnp.array(0.0)
-        final_voronoi_uniformity = jnp.array(0.0)
         num_steps = 0
-        
+        coverage_steps = []
+        dist_unif_steps = []
+        voronoi_steps = []
+
         for step in range(config.max_steps):
             key, action_key, step_key = random.split(key, 3)
             step_keys = random.split(step_key, n_envs)
-            
+
             actions_batch, maddpg_state = maddpg.select_actions_batched(
                 action_key, maddpg_state, obs_batch, explore=explore
             )
-            
+
             next_obs_batch, env_states, rewards_batch, dones_batch, info_batch = vec_step(
                 step_keys, env_states, actions_batch
             )
-            
+
             if config.prior_weight > 0:
                 def compute_priors_single_env(positions, velocities, grid_centers, grid_mask, l_cell):
                     r_avoid = compute_r_avoid(grid_mask, n_agents, l_cell, params.r_avoid)
@@ -479,7 +483,7 @@ def run_episode(
                         r_avoid,
                         params.d_sen,
                     )
-                
+
                 prior_actions_batch = jax.vmap(compute_priors_single_env)(
                     env_states.positions,
                     env_states.velocities,
@@ -489,7 +493,7 @@ def run_episode(
                 )
             else:
                 prior_actions_batch = None
-            
+
             maddpg_state = maddpg.store_transitions_batched(
                 maddpg_state,
                 obs_batch,
@@ -499,18 +503,24 @@ def run_episode(
                 dones_batch,
                 action_priors_batch=prior_actions_batch,
             )
-            
+
             obs_batch = next_obs_batch
             episode_rewards = episode_rewards + jnp.mean(rewards_batch, axis=1)
             total_collision = total_collision + jnp.mean(env_states.is_colliding)
-            # Track final state values (overwrite each step)
-            final_coverage = jnp.mean(info_batch["coverage_rate"])
-            final_distribution_uniformity = jnp.mean(info_batch["distribution_uniformity"])
-            final_voronoi_uniformity = jnp.mean(info_batch["voronoi_uniformity"])
+            coverage_steps.append(float(jnp.mean(info_batch["coverage_rate"])))
+            dist_unif_steps.append(float(jnp.mean(info_batch["distribution_uniformity"])))
+            voronoi_steps.append(float(jnp.mean(info_batch["voronoi_uniformity"])))
             num_steps = step + 1
-            
+
             if jnp.all(dones_batch[:, 0]):
                 break
+
+        coverage_mean = float(np.mean(coverage_steps)) if coverage_steps else 0.0
+        coverage_std = float(np.std(coverage_steps)) if coverage_steps else 0.0
+        dist_unif_mean = float(np.mean(dist_unif_steps)) if dist_unif_steps else 0.0
+        dist_unif_std = float(np.std(dist_unif_steps)) if dist_unif_steps else 0.0
+        voronoi_mean = float(np.mean(voronoi_steps)) if voronoi_steps else 0.0
+        voronoi_std = float(np.std(voronoi_steps)) if voronoi_steps else 0.0
     
     step_time = time.time() - step_start
     
@@ -540,10 +550,13 @@ def run_episode(
         "episode_reward": mean_episode_reward,
         "episode_reward_mean": mean_episode_reward / num_steps if num_steps > 0 else 0.0,
         "episode_reward_std": 0.0,
-        "coverage_rate": float(final_coverage),  # Final state only
+        "coverage_rate": coverage_mean,
+        "coverage_rate_std": coverage_std,
         "collision_rate": float(total_collision) / num_steps if num_steps > 0 else 0.0,
-        "distribution_uniformity": float(final_distribution_uniformity),  # Final state only
-        "voronoi_uniformity": float(final_voronoi_uniformity),  # Final state only
+        "distribution_uniformity": dist_unif_mean,
+        "distribution_uniformity_std": dist_unif_std,
+        "voronoi_uniformity": voronoi_mean,
+        "voronoi_uniformity_std": voronoi_std,
         "step_time": step_time,
         "noise_scale": float(maddpg_state.noise_scale),
         "steps_in_episode": num_steps,
@@ -579,8 +592,15 @@ def run_eval_episode(
         states: List of environment states for visualization
     """
     # Reset single environment for eval (not parallel - we want one clean trajectory)
+    # Disable domain randomization for eval — fixed shape, rotation, scale, offset
+    eval_params = params.replace(
+        randomize_shape=False,
+        randomize_rotation=False,
+        randomize_scale=False,
+        randomize_offset=False,
+    )
     key, reset_key = random.split(key)
-    obs, env_state = env.reset(reset_key, params)
+    obs, env_state = env.reset(reset_key, eval_params)
     
     # Collect states for visualization
     states = [env_state]
@@ -607,9 +627,9 @@ def run_eval_episode(
         
         # Step environment
         next_obs, env_state, rewards, dones, info = env.step(
-            step_key, env_state, actions_array, params
+            step_key, env_state, actions_array, eval_params
         )
-        
+
         # Save state for visualization
         states.append(env_state)
         
@@ -632,9 +652,12 @@ def run_eval_episode(
     metrics = {
         "eval_reward": episode_reward,
         "eval_reward_mean": episode_reward / num_steps if num_steps > 0 else 0.0,
-        "eval_coverage": coverages[-1] if coverages else 0.0,  # Final state only
-        "eval_distribution_uniformity": dist_uniformities[-1] if dist_uniformities else 0.0,  # Final state only
-        "eval_voronoi_uniformity": voronoi_uniformities[-1] if voronoi_uniformities else 0.0,  # Final state only
+        "eval_coverage": np.mean(coverages) if coverages else 0.0,
+        "eval_coverage_std": np.std(coverages) if coverages else 0.0,
+        "eval_distribution_uniformity": np.mean(dist_uniformities) if dist_uniformities else 0.0,
+        "eval_distribution_uniformity_std": np.std(dist_uniformities) if dist_uniformities else 0.0,
+        "eval_voronoi_uniformity": np.mean(voronoi_uniformities) if voronoi_uniformities else 0.0,
+        "eval_voronoi_uniformity_std": np.std(voronoi_uniformities) if voronoi_uniformities else 0.0,
         "eval_collision": np.mean(collisions),
         "eval_steps": num_steps,
     }
@@ -839,9 +862,9 @@ def train(
             print(
                 f"Episode {episode:5d}/{config.n_episodes} | "
                 f"Reward: {episode_metrics['episode_reward_mean']:7.3f} | "
-                f"Coverage: {episode_metrics['coverage_rate']:.3f} | "
-                f"DistUnif: {episode_metrics['distribution_uniformity']:.3f} | "
-                f"VoronoiUnif: {episode_metrics['voronoi_uniformity']:.3f} | "
+                f"M1: {episode_metrics['coverage_rate']:.2f} ({episode_metrics['coverage_rate_std']:.2f}) | "
+                f"M2: {episode_metrics['voronoi_uniformity']:.4f} ({episode_metrics['voronoi_uniformity_std']:.4f}) | "
+                f"DistUnif: {episode_metrics['distribution_uniformity']:.4f} ({episode_metrics['distribution_uniformity_std']:.4f}) | "
                 f"Collisions: {episode_metrics['collision_rate']:.3f} | "
                 f"Noise: {episode_metrics['noise_scale']:.3f} | "
                 f"Buffer: {buffer_size_val:6d} | "
@@ -854,9 +877,12 @@ def train(
                 "episode": episode,
                 "reward_mean": episode_metrics["episode_reward_mean"],
                 "reward_std": episode_metrics.get("episode_reward_std", 0.0),
-                "coverage_rate": episode_metrics["coverage_rate"],
-                "distribution_uniformity": episode_metrics["distribution_uniformity"],
-                "voronoi_uniformity": episode_metrics["voronoi_uniformity"],
+                "M1_mean": episode_metrics["coverage_rate"],
+                "M1_std": episode_metrics["coverage_rate_std"],
+                "M2_mean": episode_metrics["voronoi_uniformity"],
+                "M2_std": episode_metrics["voronoi_uniformity_std"],
+                "dist_unif_mean": episode_metrics["distribution_uniformity"],
+                "dist_unif_std": episode_metrics["distribution_uniformity_std"],
                 "collision_rate": episode_metrics["collision_rate"],
                 "noise_scale": episode_metrics["noise_scale"],
                 "buffer_size": buffer_size_val,
@@ -896,16 +922,25 @@ def train(
                 print(
                     f"  [EVAL] Episode {episode} | "
                     f"Reward: {eval_metrics['eval_reward_mean']:7.3f} | "
-                    f"Coverage: {eval_metrics['eval_coverage']:.3f} | "
-                    f"DistUnif: {eval_metrics['eval_distribution_uniformity']:.3f} | "
-                    f"VoronoiUnif: {eval_metrics['eval_voronoi_uniformity']:.3f}"
+                    f"M1: {eval_metrics['eval_coverage']:.2f} ({eval_metrics['eval_coverage_std']:.2f}) | "
+                    f"M2: {eval_metrics['eval_voronoi_uniformity']:.4f} ({eval_metrics['eval_voronoi_uniformity_std']:.4f}) | "
+                    f"DistUnif: {eval_metrics['eval_distribution_uniformity']:.4f} ({eval_metrics['eval_distribution_uniformity_std']:.4f}) | "
+                    f"Collision: {eval_metrics['eval_collision']:.3f}"
                 )
             
             # Log eval metrics
             log_entry = {
                 "episode": episode,
                 "type": "eval",
-                **eval_metrics,
+                "eval_reward_mean": eval_metrics["eval_reward_mean"],
+                "eval_M1_mean": eval_metrics["eval_coverage"],
+                "eval_M1_std": eval_metrics["eval_coverage_std"],
+                "eval_M2_mean": eval_metrics["eval_voronoi_uniformity"],
+                "eval_M2_std": eval_metrics["eval_voronoi_uniformity_std"],
+                "eval_dist_unif_mean": eval_metrics["eval_distribution_uniformity"],
+                "eval_dist_unif_std": eval_metrics["eval_distribution_uniformity_std"],
+                "eval_collision": eval_metrics["eval_collision"],
+                "eval_steps": eval_metrics["eval_steps"],
             }
             training_history.append(log_entry)
             
