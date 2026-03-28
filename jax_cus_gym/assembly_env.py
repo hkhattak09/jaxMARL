@@ -528,15 +528,15 @@ class AssemblySwarmEnv(MultiAgentEnv):
         
         # Minimum distance for each agent to its nearest neighbor
         min_dists = jnp.min(pairwise_dist, axis=1)  # (n_agents,)
-        
-        # Use coefficient of variation (std/mean) as uniformity metric
-        # Lower values = more uniform distribution
-        # Clamp to [0, 1] for interpretability
-        mean_dist = jnp.mean(min_dists)
-        std_dist = jnp.std(min_dists)
-        cv = jnp.where(mean_dist > 1e-8, std_dist / mean_dist, 0.0)
-        # Clamp to reasonable range
-        uniformity = jnp.clip(cv, 0.0, 1.0)
+
+        # Match MARL-LLM formula exactly:
+        # uniform = var(min_dists)
+        # metric = (uniform - min(min_dists)) / (max(min_dists) - min(min_dists))
+        variance = jnp.var(min_dists)
+        min_d = jnp.min(min_dists)
+        max_d = jnp.max(min_dists)
+        denom = max_d - min_d
+        uniformity = jnp.where(denom > 1e-8, (variance - min_d) / denom, 0.0)
         return uniformity
     
     def _compute_voronoi_uniformity(
@@ -575,15 +575,15 @@ class AssemblySwarmEnv(MultiAgentEnv):
         # Mask out invalid cells
         valid_assignments = cell_assignments & grid_mask[:, None]
         cells_per_agent = jnp.sum(valid_assignments, axis=0).astype(jnp.float32)  # (n_agents,)
-        
-        # Use coefficient of variation (std/mean) as uniformity metric
-        # Lower values = more uniform distribution of cells per agent
-        # Clamp to [0, 1] for interpretability
-        mean_cells = jnp.mean(cells_per_agent)
-        std_cells = jnp.std(cells_per_agent)
-        cv = jnp.where(mean_cells > 1e-8, std_cells / mean_cells, 0.0)
-        # Clamp to reasonable range
-        uniformity = jnp.clip(cv, 0.0, 1.0)
+
+        # Match MARL-LLM formula exactly:
+        # uniform = var(cells_per_agent)
+        # metric = (uniform - min(cells_per_agent)) / (max(cells_per_agent) - min(cells_per_agent))
+        variance = jnp.var(cells_per_agent)
+        min_c = jnp.min(cells_per_agent)
+        max_c = jnp.max(cells_per_agent)
+        denom = max_c - min_c
+        uniformity = jnp.where(denom > 1e-8, (variance - min_c) / denom, 0.0)
         return uniformity
     
     def _update_occupancy(
