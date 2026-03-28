@@ -57,6 +57,11 @@ class AssemblyTrainConfig(NamedTuple):
     # 1 = shared_mean (all agents get mean reward)
     # 2 = shared_max (all agents get max reward)
     reward_mode: int = 0
+
+    # Reward shaping
+    exploration_threshold: float = 0.15  # Uniformity check threshold (relaxed from RewardParams default)
+    reward_approach: float = 0.3         # Dense approach reward scale
+    approach_radius: float = 2.5         # Approach reward radius (metres)
     
     # ================== Algorithm (MADDPG) ==================
     hidden_dim: int = 256               # Neural network hidden layer size
@@ -228,7 +233,7 @@ config = AssemblyTrainConfig(
     max_acceleration=1.0,
     # Observation
     k_neighbors=6,
-    d_sen=0.4,
+    d_sen=0.8,
     include_self_state=True,
     # Physics
     dt=0.1,
@@ -241,6 +246,9 @@ config = AssemblyTrainConfig(
     randomize_offset=True,
     # Reward
     reward_mode=0,  # 0=individual, 1=shared_mean, 2=shared_max
+    exploration_threshold=0.15,
+    reward_approach=0.3,
+    approach_radius=2.5,
     # Algorithm
     hidden_dim=256,
     lr_actor=1e-4,
@@ -249,10 +257,10 @@ config = AssemblyTrainConfig(
     tau=0.01,
     buffer_size=80000,    # 50 episodes × 1,600 transitions/episode (8 envs × 200 steps)
     batch_size=512,
-    warmup_steps=50000,
-    noise_scale_initial=0.9,
-    noise_scale_final=0.1,
-    noise_decay_steps=2112000,
+    warmup_steps=5000,
+    noise_scale_initial=0.3,
+    noise_scale_final=0.05,
+    noise_decay_steps=800000,
     updates_per_step=20,
     prior_weight=0.03,
     # Training
@@ -396,7 +404,10 @@ def config_to_assembly_params(config: AssemblyTrainConfig):
     # r_avoid for prior policy is separate and larger (computed dynamically or from config)
     reward_params = RewardParams(
         reward_mode=config.reward_mode,
-        collision_threshold=config.agent_radius * 2,  # For reward collision detection
+        collision_threshold=config.agent_radius * 2,
+        exploration_threshold=config.exploration_threshold,
+        reward_approach=config.reward_approach,
+        approach_radius=config.approach_radius,
     )
     
     physics_params = PhysicsParams(

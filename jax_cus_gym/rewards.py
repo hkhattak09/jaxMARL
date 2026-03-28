@@ -47,10 +47,12 @@ class RewardParams:
     penalty_collision: float = 0.0  # No penalty (matches original MARL C++ code)
     reward_exploration: float = 0.1
     collision_threshold: float = 0.15  # r_avoid in original
-    exploration_threshold: float = 0.05  # Matches MARL's 0.05 threshold for ||v_exp|| check
+    exploration_threshold: float = 0.15  # was 0.05 — 0.05 was too tight for sparse init
     cosine_decay_delta: float = 0.0  # Delta for cosine decay weighting (0.0 matches C++ MARL)
     # Use integer for JAX tracing compatibility: 0=individual, 1=shared_mean, 2=shared_max
     reward_mode: int = REWARD_MODE_INDIVIDUAL
+    reward_approach: float = 0.3        # dense shaping: reward for approaching target shape
+    approach_radius: float = 2.5        # approach reward decays to 0 at this distance (metres)
 
 
 def rho_cos_dec(z: jax.Array, r: float, delta: float = 0.0) -> jax.Array:
@@ -271,9 +273,15 @@ def compute_rewards(
         info: Dictionary with additional information
     """
     n_agents = positions.shape[0]
-    
+
     # 1. Check if agents are in target region
-    in_target = compute_in_target(positions, grid_centers, l_cell)
+    # Compute distances to grid cells once — reused for in_target and approach reward
+    rel_pos_to_grid = grid_centers[None, :, :] - positions[:, None, :]  # (n_agents, n_grid, 2)
+    dist_to_grid = jnp.linalg.norm(rel_pos_to_grid, axis=-1)  # (n_agents, n_grid)
+    dist_to_nearest = jnp.min(dist_to_grid, axis=1)  # (n_agents,)
+
+    threshold = jnp.sqrt(2.0) * l_cell / 2.0
+    in_target = dist_to_nearest < threshold
     
     # 2. Check for collisions (use pre-computed result if available)
     if precomputed_is_colliding is not None:
@@ -308,7 +316,15 @@ def compute_rewards(
     )
     
     # Note: No reward clipping (matches C++ MARL which outputs rewards as 0 or 1 directly)
-    
+
+    # Dense approach reward: continuous shaping signal toward target shape.
+    # Fires for every agent proportional to proximity — gives gradient before the sparse
+    # entering reward is reachable.
+    approach_reward = reward_params.reward_approach * rho_cos_dec(
+        dist_to_nearest, reward_params.approach_radius
+    )
+    rewards = rewards + approach_reward
+
     # 5. Apply reward sharing mode (using jnp.where for JIT compatibility)
     mean_reward = jnp.mean(rewards)
     max_reward = jnp.max(rewards)
@@ -332,6 +348,7 @@ def compute_rewards(
         "task_complete": task_complete,
         "num_in_target": jnp.sum(in_target),
         "num_collisions": jnp.sum(is_colliding),
+        "approach_reward": approach_reward,
     }
     
     return rewards, info
