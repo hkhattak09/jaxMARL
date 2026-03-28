@@ -219,11 +219,11 @@ config = None
 # # Use this for full training runs
 config = AssemblyTrainConfig(
     # Environment
-    n_agents=30,
+    n_agents=20,
     n_parallel_envs=8,
     arena_size=5.0,
     agent_radius=0.035,             # Matches MARL-LLM original
-    r_avoid=None,                   # Auto-compute based on shape (or set fixed e.g. 0.4)
+    r_avoid=0.1,                    # Paper: ravoid=0.1m (fixed, matches LAMARL paper)
     max_velocity=0.8,
     max_acceleration=1.0,
     # Observation
@@ -242,13 +242,13 @@ config = AssemblyTrainConfig(
     # Reward
     reward_mode=0,  # 0=individual, 1=shared_mean, 2=shared_max
     # Algorithm
-    hidden_dim=256,
+    hidden_dim=180,
     lr_actor=1e-4,
     lr_critic=1e-3,
-    gamma=0.95,
+    gamma=0.99,
     tau=0.01,
     buffer_size=80000,    # 50 episodes × 1,600 transitions/episode (8 envs × 200 steps)
-    batch_size=2048,
+    batch_size=512,
     warmup_steps=50000,
     noise_scale_initial=0.9,
     noise_scale_final=0.1,
@@ -354,7 +354,7 @@ def config_to_maddpg_config(config: AssemblyTrainConfig, obs_dim: int, action_di
         n_agents=config.n_agents,
         obs_dims=tuple([obs_dim] * config.n_agents),
         action_dims=tuple([action_dim] * config.n_agents),
-        hidden_dims=(config.hidden_dim, config.hidden_dim),
+        hidden_dims=(config.hidden_dim, config.hidden_dim, config.hidden_dim),
         lr_actor=config.lr_actor,
         lr_critic=config.lr_critic,
         gamma=config.gamma,
