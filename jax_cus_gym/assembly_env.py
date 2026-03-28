@@ -479,7 +479,8 @@ class AssemblySwarmEnv(MultiAgentEnv):
         # so their count is close to n_agents, making M1 a meaningful 0→1 metric.
         agent_to_grid = new_state.grid_centers[None, :, :] - new_state.positions[:, None, :]
         agent_to_grid_dist = jnp.linalg.norm(agent_to_grid, axis=-1)  # (n_agents, n_grid)
-        occupied_by_any = jnp.any(agent_to_grid_dist < new_state.l_cell, axis=0)  # (n_grid,)
+        skel_threshold = jnp.sqrt(2.0) * new_state.l_cell
+        occupied_by_any = jnp.any(agent_to_grid_dist < skel_threshold, axis=0)  # (n_grid,)
         occupied_and_skeleton = occupied_by_any & new_state.skeleton_mask
         n_skeleton_cells = jnp.sum(new_state.skeleton_mask).astype(jnp.float32)
         n_occupied_skeleton = jnp.sum(occupied_and_skeleton).astype(jnp.float32)
