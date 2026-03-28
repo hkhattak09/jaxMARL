@@ -87,12 +87,14 @@ class MADDPGState:
         step: Global training step counter
         episode: Episode counter
         noise_scale: Current exploration noise scale
+        prior_weight: Current prior regularization weight (decays during training)
     """
     agent_states: DDPGAgentState
     buffer_state: ReplayBufferState
     step: jnp.ndarray
     episode: jnp.ndarray
     noise_scale: jnp.ndarray
+    prior_weight: jnp.ndarray
 
 
 class MADDPGConfig(NamedTuple):
@@ -331,6 +333,7 @@ class MADDPG:
             step=jnp.array(0, dtype=jnp.int32),
             episode=jnp.array(0, dtype=jnp.int32),
             noise_scale=jnp.array(self.config.noise_scale_initial, dtype=jnp.float32),
+            prior_weight=jnp.array(self.config.prior_weight, dtype=jnp.float32),
         )
     
     def select_actions(
@@ -620,6 +623,9 @@ class MADDPG:
                 else:
                     priors_per_agent = jnp.zeros((n_agents, batch_size, action_dim_0))
 
+                # Use the dynamic prior_weight from state so decay takes effect.
+                current_prior_weight = state.prior_weight
+
                 if use_td3:
                     def update_one_actor(ag_state, obs_i, agent_idx, prior_i):
                         return update_actor_td3(
@@ -633,7 +639,7 @@ class MADDPG:
                             agent_action_idx=agent_idx,
                             action_dim=action_dim_0,
                             action_prior=prior_i,
-                            prior_weight=config.prior_weight,
+                            prior_weight=current_prior_weight,
                         )
                 else:
                     def update_one_actor(ag_state, obs_i, agent_idx, prior_i):
@@ -648,7 +654,7 @@ class MADDPG:
                             agent_action_idx=agent_idx,
                             action_dim=action_dim_0,
                             action_prior=prior_i,
-                            prior_weight=config.prior_weight,
+                            prior_weight=current_prior_weight,
                         )
 
                 dummy_actor_infos = {
@@ -749,6 +755,7 @@ class MADDPG:
             'step': state.step,
             'episode': state.episode,
             'noise_scale': state.noise_scale,
+            'prior_weight': float(state.prior_weight),
             'config': self.config._asdict(),
         }
     
@@ -782,6 +789,7 @@ class MADDPG:
             step=params.get('step', state.step),
             episode=params.get('episode', state.episode),
             noise_scale=params.get('noise_scale', state.noise_scale),
+            prior_weight=jnp.array(params.get('prior_weight', float(state.prior_weight)), dtype=jnp.float32),
         )
 
 

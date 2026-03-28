@@ -265,3 +265,65 @@ soft_update(τ=0.01)
 - Collisions → near-zero by ep 500 (from ~0.02 at start)
 - Speed: ~3 seconds/episode, ~100 min total
 - Checkpoints every 400 eps (incremental); evals at ep 499/998/1497/1996/2495
+
+---
+
+## Metric Definitions (as of 2026-03-28)
+
+### M1 — Coverage Rate
+
+**Formula:** `(cells with any agent within l_cell) / (total valid cells)`
+
+A valid cell is "occupied" when any agent centre is within **`l_cell`** (one grid cell width) of
+the cell centre. This directly answers "is there an agent in this cell?" without coupling to
+`r_avoid`. Only valid cells (inside the target shape) are counted.
+
+Range: [0, 1]. Higher = better. 1.0 = full coverage.
+
+### M2 — Voronoi Uniformity (CoV of territory)
+
+**Formula:**
+```
+cells_per_agent[i] = valid cells whose nearest agent is i   (Voronoi partition)
+M2 = std(cells_per_agent) / mean(cells_per_agent)           (coefficient of variation)
+```
+
+Dimensionless and scale-independent. 0 = every agent owns the same number of cells
+(perfect territory equality). Higher = more skewed.
+
+Range: [0, ∞). Lower = better.
+
+> Previous C++ formula `(var - min) / (max - min)` mixed units (variance in cells²
+> divided by a range in cells) and was non-standard. CoV replaced it.
+
+### DistUnif — Distribution Uniformity (CoV of nearest-neighbour distance)
+
+**Formula:**
+```
+min_dist[i] = distance from agent i to its nearest neighbour
+DistUnif = std(min_dist) / mean(min_dist)
+```
+
+Measures spacing uniformity regardless of shape. 0 = perfect hexagonal-like lattice.
+Range: [0, ∞). Lower = better.
+
+### Collision Rate
+
+**Formula:** `mean(any other agent j with |pos_i − pos_j| < 2 * agent_radius)`
+
+Threshold: **`2 * agent_radius = 0.07 m`** — true physical contact distance.
+
+`r_avoid` (~0.26 m) is **not** used here. Using `r_avoid` as the collision proxy
+penalised well-spaced agents as "colliding" and produced artificially high rates (~0.75–0.85).
+
+Range: [0, 1]. Lower = better.
+
+### r_avoid — what it is and what it is not
+
+`r_avoid = sqrt(4 * n_grid / (n_agents * π)) * l_cell` (computed once from shape library minimum).
+
+Used only for:
+1. **Prior policy**: agents within `r_avoid` of a grid cell are treated as blocking it → excluded from grid observation → steers agents away from crowded cells.
+2. **Observation filtering**: sensing range extended by `r_avoid/2` when checking nearby cells.
+
+**NOT** used for: physical collision detection, collision reward penalty, or any metric threshold.

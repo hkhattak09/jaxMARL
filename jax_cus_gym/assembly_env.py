@@ -424,12 +424,14 @@ class AssemblySwarmEnv(MultiAgentEnv):
         pw_rel_pos, pw_distances, _ = compute_pairwise_distances(new_positions)
         n = new_positions.shape[0]
 
-        # Fix 1: Use r_avoid (C++ formula) as collision threshold for reward gating,
-        # not 2*agent_radius. C++ blocks reward when agents are within r_avoid of each other.
         r_avoid = compute_r_avoid(
             new_state.grid_mask, self.n_agents, new_state.l_cell, params.r_avoid
         )
-        _col_mat = (pw_distances < r_avoid) & ~jnp.eye(n, dtype=bool)
+        # Physical collision: agents touching when centre-to-centre < 2 * radius.
+        # r_avoid (~0.26m) is used only for the prior policy / observation filtering,
+        # not as a collision proxy.  2*agent_radius = 0.07m is the true contact distance.
+        physical_collision_threshold = 2.0 * params.agent_radius
+        _col_mat = (pw_distances < physical_collision_threshold) & ~jnp.eye(n, dtype=bool)
         is_colliding = jnp.any(_col_mat, axis=1)
 
         # Update occupancy tracking (uses pre-computed is_colliding)
@@ -451,6 +453,7 @@ class AssemblySwarmEnv(MultiAgentEnv):
             precomputed_distances=pw_distances,
         )
 
+        # compute_rewards applies reward sharing internally via reward_params.reward_mode.
         rewards, reward_info = compute_rewards(
             new_positions,
             new_velocities,
@@ -465,22 +468,15 @@ class AssemblySwarmEnv(MultiAgentEnv):
             precomputed_is_colliding=is_colliding,
         )
         
-        # Apply reward sharing
-        rewards = self._apply_reward_sharing(rewards, params.reward_mode)
-        
         dones = jnp.full((self.n_agents,), done)
         
-        # Compute coverage as fraction of valid grid cells that are occupied
-        # (matches MARL wrapper: grid-centric coverage over target shape only).
-        # A grid cell is "occupied" if ANY agent is within r_avoid/2 of it.
-        # r_avoid is computed using MARL formula: sqrt(4 * n_grid / (n_agents * pi)) * l_cell
-        # Only count valid cells (within target shape) - MARL only stores valid cells.
-        r_avoid = compute_r_avoid(
-            new_state.grid_mask, self.n_agents, new_state.l_cell, params.r_avoid
-        )
+        # M1 coverage: fraction of valid grid cells that are "occupied".
+        # A cell is occupied if ANY agent centre falls within l_cell of the cell centre.
+        # l_cell is the grid spacing, so this threshold directly answers the question
+        # "is there an agent in this cell?" without depending on r_avoid.
         agent_to_grid = new_state.grid_centers[None, :, :] - new_state.positions[:, None, :]
         agent_to_grid_dist = jnp.linalg.norm(agent_to_grid, axis=-1)  # (n_agents, n_grid)
-        occupied_by_any = jnp.any(agent_to_grid_dist < r_avoid / 2.0, axis=0)  # (n_grid,)
+        occupied_by_any = jnp.any(agent_to_grid_dist < new_state.l_cell, axis=0)  # (n_grid,)
         # Only count occupied cells that are valid (in the target shape)
         occupied_and_valid = occupied_by_any & new_state.grid_mask
         n_valid_cells = jnp.sum(new_state.grid_mask).astype(jnp.float32)
@@ -579,15 +575,12 @@ class AssemblySwarmEnv(MultiAgentEnv):
         valid_assignments = cell_assignments & grid_mask[:, None]
         cells_per_agent = jnp.sum(valid_assignments, axis=0).astype(jnp.float32)  # (n_agents,)
 
-        # C++ formula (assembly_wrapper.py line 126-127):
-        #   uniform = var(cells_per_agent)
-        #   metric_3 = (uniform - min(cells_per_agent)) / (max(cells_per_agent) - min(cells_per_agent))
-        # Returns 0 when all agents have equal cells (perfect uniformity → max == min).
-        uniform = jnp.var(cells_per_agent)
-        min_cells = jnp.min(cells_per_agent)
-        max_cells = jnp.max(cells_per_agent)
-        range_cells = max_cells - min_cells
-        uniformity = jnp.where(range_cells > 0, (uniform - min_cells) / range_cells, 0.0)
+        # M2: coefficient of variation of cells-per-agent.
+        # CoV = std / mean.  0 = perfect (every agent owns exactly the same number of cells).
+        # Higher = more unequal territory.  Dimensionless and scale-independent.
+        mean_cells = jnp.mean(cells_per_agent)
+        std_cells = jnp.std(cells_per_agent)
+        uniformity = jnp.where(mean_cells > 1e-8, std_cells / mean_cells, 0.0)
         return uniformity
     
     def _update_occupancy(
@@ -610,17 +603,15 @@ class AssemblySwarmEnv(MultiAgentEnv):
         in_valid_cell = in_cell & state.grid_mask[None, :]
         in_target = jnp.any(in_valid_cell, axis=1)
 
-        # Grid cell is occupied if ANY agent is within r_avoid/2
-        # Fix 1: Use C++ formula for r_avoid, not params.reward_params.collision_threshold
-        r_avoid = compute_r_avoid(
-            state.grid_mask, self._n_agents, state.l_cell, params.r_avoid
-        )
-        occupied_by_any = jnp.any(agent_to_grid_dist < r_avoid / 2, axis=0)
+        # Grid cell occupied if ANY agent centre is within l_cell of the cell centre
+        # (consistent with M1 coverage metric in step()).
+        occupied_by_any = jnp.any(agent_to_grid_dist < state.l_cell, axis=0)
         occupied_mask = occupied_by_any & state.grid_mask
 
         if precomputed_is_colliding is None:
+            physical_collision_threshold = 2.0 * params.agent_radius
             precomputed_is_colliding, _ = compute_agent_collisions(
-                state.positions, r_avoid
+                state.positions, physical_collision_threshold
             )
 
         return state.replace(

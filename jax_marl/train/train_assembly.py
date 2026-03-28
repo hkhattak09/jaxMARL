@@ -543,6 +543,15 @@ def run_episode(
             config.noise_scale_initial - config.noise_scale_final
         )
         maddpg_state = maddpg_state.replace(noise_scale=jnp.array(new_noise))
+
+    # Update prior weight — linear decay to final value, then fixed.
+    # config.prior_weight_decay = [final_value, decay_episode]
+    current_episode = training_state.episode + 1  # episode number after this one completes
+    if config.prior_weight_decay is not None and config.prior_weight > 0:
+        prior_final, decay_episode = config.prior_weight_decay
+        prior_progress = min(1.0, current_episode / max(1, decay_episode))
+        new_prior_weight = config.prior_weight - prior_progress * (config.prior_weight - prior_final)
+        maddpg_state = maddpg_state.replace(prior_weight=jnp.array(new_prior_weight, dtype=jnp.float32))
     
     new_training_state = TrainingState(
         maddpg_state=maddpg_state,
@@ -847,6 +856,7 @@ def train(
         
         # Logging
         if episode % config.log_interval == 0 and verbose:
+            prior_w_val = float(training_state.maddpg_state.prior_weight)
             print(
                 f"Episode {episode:5d}/{config.n_episodes} | "
                 f"Reward: {episode_metrics['episode_reward_mean']:7.3f} | "
@@ -855,6 +865,7 @@ def train(
                 f"DistUnif: {episode_metrics['distribution_uniformity']:.4f} ({episode_metrics['distribution_uniformity_std']:.4f}) | "
                 f"Collisions: {episode_metrics['collision_rate']:.3f} | "
                 f"Noise: {episode_metrics['noise_scale']:.3f} | "
+                f"Prior: {prior_w_val:.3f} | "
                 f"Buffer: {buffer_size_val:6d} | "
                 f"Elapsed: {elapsed_mins}m {elapsed_secs:.1f}s"
             )
@@ -873,6 +884,7 @@ def train(
                 "dist_unif_std": episode_metrics["distribution_uniformity_std"],
                 "collision_rate": episode_metrics["collision_rate"],
                 "noise_scale": episode_metrics["noise_scale"],
+                "prior_weight": float(training_state.maddpg_state.prior_weight),
                 "buffer_size": buffer_size_val,
                 "step_time": episode_metrics["step_time"],
                 "train_time": train_time,

@@ -660,13 +660,12 @@ def compute_actor_loss(
     q_value = critic.apply(critic_params, global_obs, all_actions)
     policy_loss = -jnp.mean(q_value)
 
-    # Prior regularization
-    reg_loss = jnp.array(0.0)
-    if prior_weight > 0:
-        # Only compute for valid priors (non-zero)
-        valid_mask = jnp.any(jnp.abs(action_prior) > 1e-6, axis=-1, keepdims=True)
-        mse = jnp.sum((policy_action - action_prior) ** 2, axis=-1, keepdims=True)
-        reg_loss = jnp.sum(mse * valid_mask) / (jnp.sum(valid_mask) + 1e-8)
+    # Prior regularization — always computed so prior_weight can be a traced JAX scalar.
+    # valid_mask ignores zero priors (stored as zeros when prior is disabled).
+    # When prior_weight=0, the term vanishes: prior_weight * reg_loss = 0.
+    valid_mask = jnp.any(jnp.abs(action_prior) > 1e-6, axis=-1, keepdims=True)
+    mse = jnp.sum((policy_action - action_prior) ** 2, axis=-1, keepdims=True)
+    reg_loss = jnp.sum(mse * valid_mask) / (jnp.sum(valid_mask) + 1e-8)
 
     loss = policy_loss + prior_weight * reg_loss
 
@@ -730,12 +729,12 @@ def compute_actor_loss_td3(
     q1_value, _ = critic.apply(critic_params, global_obs, all_actions)
     policy_loss = -jnp.mean(q1_value)
 
-    # Prior regularization
-    reg_loss = jnp.array(0.0)
-    if prior_weight > 0:
-        valid_mask = jnp.any(jnp.abs(action_prior) > 1e-6, axis=-1, keepdims=True)
-        mse = jnp.sum((policy_action - action_prior) ** 2, axis=-1, keepdims=True)
-        reg_loss = jnp.sum(mse * valid_mask) / (jnp.sum(valid_mask) + 1e-8)
+    # Prior regularization — always computed so prior_weight can be a traced JAX scalar.
+    # valid_mask ignores zero priors (stored as zeros when prior is disabled).
+    # When prior_weight=0, the term vanishes: prior_weight * reg_loss = 0.
+    valid_mask = jnp.any(jnp.abs(action_prior) > 1e-6, axis=-1, keepdims=True)
+    mse = jnp.sum((policy_action - action_prior) ** 2, axis=-1, keepdims=True)
+    reg_loss = jnp.sum(mse * valid_mask) / (jnp.sum(valid_mask) + 1e-8)
 
     loss = policy_loss + prior_weight * reg_loss
 
