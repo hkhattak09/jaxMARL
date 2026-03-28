@@ -75,12 +75,7 @@ class AssemblyTrainConfig(NamedTuple):
     
     updates_per_step: int = 30          # Gradient updates per training step
     
-    prior_weight: float = 0.3           # LLM prior regularization (0 = disabled)
-    # Decay prior_weight over training so the critic takes over.
-    # Format: [final_value, decay_episode] — prior_weight linearly decays from its initial
-    # value to final_value, reaching final_value at decay_episode and staying there.
-    # Set to None to disable decay.
-    prior_weight_decay: Optional[list] = None
+    prior_weight: float = 0.03          # LLM prior regularization weight α (fixed, 0 = disabled)
     
     # ================== TD3 Enhancements ==================
     use_td3: bool = True                # Enable TD3 (twin critics, delayed updates, smoothing)
@@ -258,9 +253,8 @@ config = AssemblyTrainConfig(
     noise_scale_initial=0.9,
     noise_scale_final=0.1,
     noise_decay_steps=2112000,
-    updates_per_step=10,
-    prior_weight=0.5,
-    prior_weight_decay=[0.05, 2000],  # decay to floor of 0.05 by episode 2000 (67% of training)
+    updates_per_step=20,
+    prior_weight=0.03,
     # Training
     seed=226,
     n_episodes=3000,
