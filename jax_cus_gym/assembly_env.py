@@ -103,6 +103,7 @@ class AssemblyState(EnvState):
     occupied_mask: jnp.ndarray
     in_target: jnp.ndarray
     is_colliding: jnp.ndarray
+    skeleton_mask: jnp.ndarray  # medial-axis cells (max_n_grid,) — M1 denominator
 
 
 @struct.dataclass
@@ -280,7 +281,7 @@ class AssemblySwarmEnv(MultiAgentEnv):
             shape_idx = 0
         
         # Get base shape
-        base_grid, base_l_cell, base_mask = get_shape_from_library(
+        base_grid, base_l_cell, base_mask, base_skeleton_mask = get_shape_from_library(
             self._shape_library, shape_idx
         )
         
@@ -328,7 +329,7 @@ class AssemblySwarmEnv(MultiAgentEnv):
         occupied_mask = jnp.zeros(self._shape_library.max_n_grid, dtype=bool)
         in_target = jnp.zeros(self.n_agents, dtype=bool)
         is_colliding = jnp.zeros(self.n_agents, dtype=bool)
-        
+
         state = AssemblyState(
             positions=positions,
             velocities=velocities,
@@ -347,6 +348,7 @@ class AssemblySwarmEnv(MultiAgentEnv):
             occupied_mask=occupied_mask,
             in_target=in_target,
             is_colliding=is_colliding,
+            skeleton_mask=base_skeleton_mask,
         )
         
         # Update occupancy
@@ -417,6 +419,7 @@ class AssemblySwarmEnv(MultiAgentEnv):
             occupied_mask=state.occupied_mask,
             in_target=state.in_target,
             is_colliding=state.is_colliding,
+            skeleton_mask=state.skeleton_mask,
         )
         
         # Compute pairwise distances once — reused by occupancy, neighbor finding, and rewards.
@@ -470,18 +473,17 @@ class AssemblySwarmEnv(MultiAgentEnv):
         
         dones = jnp.full((self.n_agents,), done)
         
-        # M1 coverage: fraction of valid grid cells that are "occupied".
-        # A cell is occupied if ANY agent centre falls within l_cell of the cell centre.
-        # l_cell is the grid spacing, so this threshold directly answers the question
-        # "is there an agent in this cell?" without depending on r_avoid.
+        # M1 coverage: of the skeleton (medial-axis) cells of the shape, how many
+        # are currently occupied by at least one agent. Skeleton cells are the
+        # centre-lines of each stroke — equidistant from inner and outer boundary —
+        # so their count is close to n_agents, making M1 a meaningful 0→1 metric.
         agent_to_grid = new_state.grid_centers[None, :, :] - new_state.positions[:, None, :]
         agent_to_grid_dist = jnp.linalg.norm(agent_to_grid, axis=-1)  # (n_agents, n_grid)
         occupied_by_any = jnp.any(agent_to_grid_dist < new_state.l_cell, axis=0)  # (n_grid,)
-        # Only count occupied cells that are valid (in the target shape)
-        occupied_and_valid = occupied_by_any & new_state.grid_mask
-        n_valid_cells = jnp.sum(new_state.grid_mask).astype(jnp.float32)
-        n_occupied_cells = jnp.sum(occupied_and_valid).astype(jnp.float32)
-        coverage_rate = jnp.where(n_valid_cells > 0.0, n_occupied_cells / n_valid_cells, 0.0)
+        occupied_and_skeleton = occupied_by_any & new_state.skeleton_mask
+        n_skeleton_cells = jnp.sum(new_state.skeleton_mask).astype(jnp.float32)
+        n_occupied_skeleton = jnp.sum(occupied_and_skeleton).astype(jnp.float32)
+        coverage_rate = jnp.where(n_skeleton_cells > 0.0, n_occupied_skeleton / n_skeleton_cells, 0.0)
         
         # Compute distribution uniformity (matches MARL wrapper)
         # Based on variance of minimum inter-agent distances

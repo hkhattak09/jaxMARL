@@ -260,7 +260,7 @@ config = AssemblyTrainConfig(
     noise_decay_steps=2112000,
     updates_per_step=10,
     prior_weight=0.5,
-    prior_weight_decay=[0.0, 1500],  # decay to 0 by episode 1500 (50% of training)
+    prior_weight_decay=[0.05, 2000],  # decay to floor of 0.05 by episode 2000 (67% of training)
     # Training
     seed=226,
     n_episodes=3000,

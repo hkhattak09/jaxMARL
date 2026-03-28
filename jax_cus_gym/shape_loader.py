@@ -13,6 +13,7 @@ The pickle files should contain:
 from typing import Tuple, List, Dict, Any, Optional, Union
 import pickle
 import os
+import numpy as np
 import jax
 import jax.numpy as jnp
 from flax import struct
@@ -56,6 +57,41 @@ class ShapeLibrary:
     n_shapes: int
     max_n_grid: int
     shape_masks: jnp.ndarray  # (n_shapes, max_n_grid) - True for valid cells
+    skeleton_masks: jnp.ndarray  # (n_shapes, max_n_grid) - True for medial-axis cells
+
+
+def compute_skeleton_mask(grid_centers_np: np.ndarray, l_cell: float) -> np.ndarray:
+    """Compute the medial-axis (skeleton) mask for a shape.
+
+    Rasterises the valid cells onto an integer grid, runs a distance transform
+    (each cell's distance to the nearest non-shape cell), then marks cells that
+    are strict local maxima of that field.  These are the cells equidistant from
+    the inner and outer boundary — the centre-lines of every stroke.
+
+    Args:
+        grid_centers_np: (n_valid, 2) positions of valid shape cells (numpy).
+        l_cell: Grid spacing (used to quantise positions to integer coords).
+
+    Returns:
+        Boolean array of shape (n_valid,) — True for skeleton cells.
+    """
+    from scipy.ndimage import distance_transform_edt, maximum_filter
+
+    # Quantise float positions to integer (i, j) grid indices
+    origin = grid_centers_np.min(axis=0)
+    ij = np.round((grid_centers_np - origin) / l_cell).astype(int)
+
+    rows, cols = ij[:, 0], ij[:, 1]
+    grid = np.zeros((rows.max() + 1, cols.max() + 1), dtype=bool)
+    grid[rows, cols] = True
+
+    # Distance of each True cell to nearest False cell (boundary)
+    dist = distance_transform_edt(grid)
+
+    # Local maxima: cell value == max over 3×3 neighbourhood
+    local_max = (dist == maximum_filter(dist, size=3)) & grid
+
+    return local_max[rows, cols]
 
 
 def load_shapes_from_pickle(filepath: str) -> ShapeLibrary:
@@ -102,9 +138,10 @@ def load_shapes_from_pickle(filepath: str) -> ShapeLibrary:
     n_grids = [g.shape[0] for g in processed_grids]
     max_n_grid = max(n_grids)
     
-    # Pad all grids to max size
+    # Pad all grids to max size and compute skeleton masks
     padded_grids = []
     masks = []
+    skeleton_masks = []
     for i, grid in enumerate(processed_grids):
         n = grid.shape[0]
         if n < max_n_grid:
@@ -114,17 +151,24 @@ def load_shapes_from_pickle(filepath: str) -> ShapeLibrary:
         else:
             padded = grid
         padded_grids.append(padded)
-        
-        # Create mask
+
         mask = jnp.arange(max_n_grid) < n
         masks.append(mask)
-    
+
+        # Skeleton: medial-axis cells (equidistant from inner & outer boundary)
+        grid_np = np.array(grid)
+        skel_valid = compute_skeleton_mask(grid_np, float(l_cells[i]))
+        skel_full = np.zeros(max_n_grid, dtype=bool)
+        skel_full[:n] = skel_valid
+        skeleton_masks.append(jnp.array(skel_full))
+
     # Stack into arrays
     grid_centers = jnp.stack(padded_grids, axis=0)  # (n_shapes, max_n_grid, 2)
     l_cells_arr = jnp.array(l_cells)
     n_grids_arr = jnp.array(n_grids)
     shape_masks = jnp.stack(masks, axis=0)
-    
+    skeleton_masks_arr = jnp.stack(skeleton_masks, axis=0)
+
     return ShapeLibrary(
         grid_centers=grid_centers,
         l_cells=l_cells_arr,
@@ -132,29 +176,32 @@ def load_shapes_from_pickle(filepath: str) -> ShapeLibrary:
         n_shapes=n_shapes,
         max_n_grid=max_n_grid,
         shape_masks=shape_masks,
+        skeleton_masks=skeleton_masks_arr,
     )
 
 
 def get_shape_from_library(
     library: ShapeLibrary,
     shape_idx: int,
-) -> Tuple[jnp.ndarray, float, jnp.ndarray]:
+) -> Tuple[jnp.ndarray, float, jnp.ndarray, jnp.ndarray]:
     """Extract a single shape from the library.
-    
+
     Args:
         library: ShapeLibrary containing all shapes
         shape_idx: Index of shape to extract
-        
+
     Returns:
         grid_centers: Grid centers for this shape (max_n_grid, 2)
         l_cell: Cell size
         mask: Valid cell mask (max_n_grid,)
+        skeleton_mask: Medial-axis cell mask (max_n_grid,)
     """
     grid_centers = library.grid_centers[shape_idx]
     l_cell = library.l_cells[shape_idx]
     mask = library.shape_masks[shape_idx]
-    
-    return grid_centers, l_cell, mask
+    skeleton_mask = library.skeleton_masks[shape_idx]
+
+    return grid_centers, l_cell, mask, skeleton_mask
 
 
 def apply_shape_transform(
@@ -298,9 +345,10 @@ def create_shape_library_from_procedural(
     
     max_n_grid = max(n_grids)
     
-    # Pad to same size
+    # Pad to same size and compute skeleton masks
     padded_grids = []
     masks = []
+    skeleton_masks = []
     for i, grid in enumerate(shapes):
         n = grid.shape[0]
         if n < max_n_grid:
@@ -310,7 +358,13 @@ def create_shape_library_from_procedural(
             padded = grid
         padded_grids.append(padded)
         masks.append(jnp.arange(max_n_grid) < n)
-    
+
+        grid_np = np.array(grid)
+        skel_valid = compute_skeleton_mask(grid_np, float(l_cells[i]))
+        skel_full = np.zeros(max_n_grid, dtype=bool)
+        skel_full[:n] = skel_valid
+        skeleton_masks.append(jnp.array(skel_full))
+
     return ShapeLibrary(
         grid_centers=jnp.stack(padded_grids, axis=0),
         l_cells=jnp.array(l_cells),
@@ -318,6 +372,7 @@ def create_shape_library_from_procedural(
         n_shapes=len(shape_types),
         max_n_grid=max_n_grid,
         shape_masks=jnp.stack(masks, axis=0),
+        skeleton_masks=jnp.stack(skeleton_masks, axis=0),
     )
 
 
